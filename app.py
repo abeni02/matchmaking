@@ -12,39 +12,8 @@ import asyncio
 import json
 import os
 import datetime
-import threading
 from flask import Flask
-import signal
-import sys
-
-# Flask app for Koyeb health checks
-app = Flask(__name__)
-
-@app.route('/')
-def home():
-    return "Bot is running!", 200
-
-@app.route('/health')
-def health():
-    return {"status": "healthy"}, 200
-
-@app.before_first_request
-def log_flask_start():
-    print("Flask app started successfully")
-
-def run_flask():
-    try:
-        port = int(os.environ.get('PORT', 8000))
-        print(f"Starting Flask app on port {port}")
-        app.run(host='0.0.0.0', port=port, debug=False, use_reloader=False)
-    except Exception as e:
-        print(f"❌ Flask failed to start: {e}")
-
-def signal_handler(sig, frame):
-    print("Received SIGTERM, shutting down...")
-    sys.exit(0)
-
-signal.signal(signal.SIGTERM, signal_handler)
+import threading
 
 # Bot token and channel ID setup
 BOT_TOKEN = os.getenv('BOT_TOKEN')
@@ -61,7 +30,7 @@ dp.include_router(router)
 
 # Initialize data structures
 user_data = {}  # Stores user preferences
-USER_DATA_FILE = "/app/data/user_data.json"  # Use a persistent volume path for Koyeb
+USER_DATA_FILE = "user_data.json"
 active_matches = {}  # Tracks active matches (user1: user2)
 cooldown_tracker = {}  # Tracks cooldowns for specific user pairs {user_id: {partner_id: cooldown_end_time}}
 waiting_users = set()  # Tracks users who pressed Begin but are unmatched
@@ -83,7 +52,6 @@ async def save_user_data():
     """Save the user_data dictionary to a JSON file."""
     serializable_data = {str(user_id): data for user_id, data in user_data.items()}
     try:
-        os.makedirs(os.path.dirname(USER_DATA_FILE), exist_ok=True)  # Ensure directory exists
         with open(USER_DATA_FILE, 'w', encoding='utf-8') as file:
             json.dump(serializable_data, file, indent=4, ensure_ascii=False)
         print(f"✅ User data saved to {USER_DATA_FILE}")
@@ -223,7 +191,7 @@ async def show_setup_menu(message_or_callback):
 async def handle_your_setup(callback: CallbackQuery):
     """
     Handle "Your Setup" inline keyboard button.
-    Replaces the current Ascertain the current inline keyboard with specific options: Age, Gender, Religion.
+    Replaces the current inline keyboard with specific options: Age, Gender, Religion.
     """
     inline_keyboard = InlineKeyboardMarkup(
         inline_keyboard=[
@@ -1107,7 +1075,7 @@ async def handle_show_setup(callback: CallbackQuery):
 async def periodic_save():
     """Periodically save user data to avoid data loss."""
     while True:
-        await asyncio.sleep(300)  # Changed to 5 minutes for less I/O overhead
+        await asyncio.sleep(60)
         await save_user_data()
         print("🔄 Performed periodic backup of user data")
 
@@ -1115,7 +1083,7 @@ async def main():
     load_user_data()
     print("🤖 Bot is running...")
     print("💾 Individual data points will be saved immediately upon change")
-    print("💾 Automatic backups will occur every 5 minutes")
+    print("💾 Automatic backups will occur every minute")
     await set_bot_commands()
     periodic_save_task = asyncio.create_task(periodic_save())
     try:
@@ -1131,6 +1099,18 @@ async def main():
         except asyncio.CancelledError:
             pass
         print("👋 Bot has shut down gracefully")
+
+# Flask app for Koyeb health checks
+app = Flask(__name__)
+
+@app.route('/')
+def home():
+    return "Bot is running!"
+
+def run_flask():
+    port = int(os.environ.get('PORT', 8000))
+    print(f"Starting Flask app on port {port}")
+    app.run(host='0.0.0.0', port=port)
 
 if __name__ == "__main__":
     flask_thread = threading.Thread(target=run_flask)
