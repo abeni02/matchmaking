@@ -12,28 +12,49 @@ import asyncio
 import json
 import os
 import datetime
+from motor.motor_asyncio import AsyncIOMotorClient  # Added for MongoDB
 
-# Bot token and channel ID setup
+# Bot token, channel ID, group ID, and group invite link setup
 BOT_TOKEN = os.getenv('BOT_TOKEN')
 CHANNEL_ID = os.getenv('CHANNEL_ID')  # Private channel ID (e.g., -1001234567890)
+GROUP_ID = os.getenv('GROUP_ID')      # Private group ID (e.g., -1009876543210)
+GROUP_INVITE_LINK = os.getenv('GROUP_INVITE_LINK')  # Invite link (e.g., https://t.me/+abc123)
+MONGODB_URI = os.getenv('MONGODB_URI')  # Added MongoDB URI from environment
+
 if not BOT_TOKEN:
     raise ValueError("No BOT_TOKEN found in environment variables. Please set it securely.")
 if not CHANNEL_ID:
     raise ValueError("No CHANNEL_ID found in environment variables. Please set it securely.")
+if not GROUP_ID:
+    raise ValueError("No GROUP_ID found in environment variables. Please set it securely.")
+if not GROUP_INVITE_LINK:
+    raise ValueError("No GROUP_INVITE_LINK found in environment variables. Please set it securely.")
+if not MONGODB_URI:
+    raise ValueError("No MONGODB_URI found in environment variables. Please set it securely.")
 
 bot = Bot(token=BOT_TOKEN)
 router = Router()
 dp = Dispatcher()
 dp.include_router(router)
 
+# MongoDB setup
+client = AsyncIOMotorClient(MONGODB_URI)
+db = client['bot_database']  # Database name (customize as needed)
+users_collection = db['users']  # Collection for user data
+
 # Initialize data structures
 user_data = {}  # Stores user preferences
-USER_DATA_FILE = "user_data.json"
+# USER_DATA_FILE = "user_data.json"  # Removed as we're using MongoDB
 active_matches = {}  # Tracks active matches (user1: user2)
 cooldown_tracker = {}  # Tracks cooldowns for specific user pairs {user_id: {partner_id: cooldown_end_time}}
 waiting_users = set()  # Tracks users who pressed Begin but are unmatched
 waiting_start_times = {}  # Tracks when each user started waiting {user_id: datetime.datetime}
 message_id_map = {}  # Tracks message IDs: {sender_id: {original_message_id: forwarded_message_id}}
+
+# Button texts
+BEGIN_TEXT = "🚀 Begin"
+STOP_SEARCHING_TEXT = "🛑 Stop Searching"
+END_CHAT_TEXT = "🛑 End Chat"
 
 # Function to get gender emoji
 def get_gender_emoji(gender):
@@ -45,37 +66,80 @@ def get_gender_emoji(gender):
     else:
         return "❓"  # Fallback for unset or unknown gender
 
-# Function to save user data to a JSON file
+# Function to save all user data to MongoDB (for periodic save)
 async def save_user_data():
-    """Save the user_data dictionary to a JSON file."""
-    serializable_data = {str(user_id): data for user_id, data in user_data.items()}
-    try:
-        with open(USER_DATA_FILE, 'w', encoding='utf-8') as file:
-            json.dump(serializable_data, file, indent=4, ensure_ascii=False)
-        print(f"✅ User data saved to {USER_DATA_FILE}")
-    except Exception as e:
-        print(f"❌ Error saving user data: {e}")
+    """Save the entire user_data dictionary to MongoDB."""
+    for user_id, data in user_data.items():
+        try:
+            await users_collection.replace_one(
+                {'_id': user_id},
+                {'_id': user_id, **data},
+                upsert=True
+            )
+        except Exception as e:
+            print(f"❌ Error saving user {user_id} to MongoDB: {e}")
+    print(f"✅ All user data saved to MongoDB")
 
-# Function for immediate (non-awaited) saving
+# Function to update a single user's data in MongoDB
+async def update_user_data(user_id):
+    """Update or insert a single user's data in MongoDB."""
+    if user_id in user_data:
+        user_info = user_data[user_id]
+        try:
+            await users_collection.replace_one(
+                {'_id': user_id},
+                {'_id': user_id, **user_info},
+                upsert=True
+            )
+            print(f"✅ Updated user {user_id} in MongoDB")
+        except Exception as e:
+            print(f"❌ Error updating user {user_id} in MongoDB: {e}")
+    else:
+        print(f"⚠️ User {user_id} not found in user_data")
+
+# Function for immediate (non-awaited) saving of a single user's data
 def save_user_data_now():
-    """Immediately save user data without awaiting - for use after each data change."""
+    """Immediately save user data for the last modified user without awaiting."""
+    # Note: This function is replaced in handlers with update_user_data_now(user_id)
+    # Kept for compatibility but should not be called directly unless modified
     asyncio.create_task(save_user_data())
 
-# Function to load user data from a JSON file
-def load_user_data():
-    """Load the user_data dictionary from a JSON file if it exists."""
+def update_user_data_now(user_id):
+    """Create a task to update a specific user's data in MongoDB immediately."""
+    asyncio.create_task(update_user_data(user_id))
+
+# Function to load user data from MongoDB
+async def load_user_data():
+    """Load the user_data dictionary from MongoDB."""
     global user_data
+    user_data = {}
     try:
-        if os.path.exists(USER_DATA_FILE):
-            with open(USER_DATA_FILE, 'r', encoding='utf-8') as file:
-                loaded_data = json.load(file)
-                user_data = {int(user_id): data for user_id, data in loaded_data.items()}
-            print(f"✅ User data loaded from {USER_DATA_FILE}")
-            print(f"📊 Loaded data for {len(user_data)} users")
-        else:
-            print(f"ℹ️ No user data file found at {USER_DATA_FILE}")
+        async for document in users_collection.find():
+            user_id = document['_id']
+            user_data[user_id] = {k: v for k, v in document.items() if k != '_id'}
+        print(f"✅ Loaded data for {len(user_data)} users from MongoDB")
     except Exception as e:
-        print(f"❌ Error loading user data: {e}")
+        print(f"❌ Error loading user data from MongoDB: {e}")
+
+# Helper function to check if a user is a group member
+async def is_group_member(user_id: int) -> bool:
+    """Check if the user is a member of the specified private group."""
+    try:
+        member = await bot.get_chat_member(chat_id=GROUP_ID, user_id=user_id)
+        return member.status not in ['left', 'kicked']
+    except Exception as e:
+        print(f"Error checking group membership for user {user_id}: {e}")
+        return False
+
+# Function to send join group message
+async def send_join_group_message(message: Message):
+    """Send a message prompting the user to join the private group with an invite link."""
+    join_button = InlineKeyboardButton(text="Join Group", url=GROUP_INVITE_LINK)
+    join_keyboard = InlineKeyboardMarkup(inline_keyboard=[[join_button]])
+    await message.answer(
+        text="This bot is exclusive to members of our private group. Please join the group to use the bot.",
+        reply_markup=join_keyboard
+    )
 
 # Helper function to check if setup is complete
 def is_setup_complete(user_id):
@@ -113,21 +177,32 @@ def is_setup_complete(user_id):
 
     return len(missing_fields) == 0, missing_fields
 
-# Define the Reply Keyboard with dynamic "Begin" or "End"
-def get_main_keyboard(is_begin: bool = True):
-    """
-    Returns a layout for the main menu.
-    Dynamically switches between "Begin" and "End".
-    """
+# Helper function to get user state
+def get_user_state(user_id):
+    """Determine the user's current state: idle, searching, or chatting."""
+    if user_id in active_matches:
+        return "chatting"
+    elif user_id in waiting_users:
+        return "searching"
+    else:
+        return "idle"
+
+# Define the Reply Keyboard with dynamic state-based buttons
+def get_main_keyboard(state="idle"):
+    """Returns a layout for the main menu based on the user's state: 'idle' ('Begin'), 'searching' ('Stop Searching'), 'chatting' ('End Chat')."""
+    if state == "idle":
+        action_text = BEGIN_TEXT
+    elif state == "searching":
+        action_text = STOP_SEARCHING_TEXT
+    elif state == "chatting":
+        action_text = END_CHAT_TEXT
+    else:
+        action_text = BEGIN_TEXT  # Default to idle
+
     return ReplyKeyboardMarkup(
         keyboard=[
-            [
-                KeyboardButton(text="🚀 Begin" if is_begin else "🛑 End"),
-                KeyboardButton(text="⚙️ Setup"),
-            ],
-            [
-                KeyboardButton(text="❓ Help"),
-            ],
+            [KeyboardButton(text=action_text), KeyboardButton(text="⚙️ Setup")],
+            [KeyboardButton(text="❓ Help")],
         ],
         resize_keyboard=True
     )
@@ -140,32 +215,49 @@ def get_setup_inline_keyboard():
     """
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="Your Setup", callback_data="your_setup")],
-            [InlineKeyboardButton(text="Partner Setup", callback_data="partner_setup")],
-            [InlineKeyboardButton(text="Show Setup", callback_data="show_setup")],
+            [InlineKeyboardButton(text="Your profile", callback_data="your_setup")],
+            [InlineKeyboardButton(text="Partner Profile", callback_data="partner_setup")],
+            [InlineKeyboardButton(text="Show Profile", callback_data="show_setup")],
         ]
     )
 
-# Define the /start command
+# Define the /start command with membership check
 @router.message(F.text == "/start")
 async def start_command(message: Message):
     """
     Handle the /start command:
-    - Send welcome message.
-    - Automatically redirect to Setup.
+    - Check if the user is a member of the private group.
+    - If not, prompt them to join.
+    - If yes, send welcome message based on the user's current state and show setup menu if idle.
     """
+    user_id = message.from_user.id
+    if not await is_group_member(user_id):
+        await send_join_group_message(message)
+        return
+
+    current_state = get_user_state(user_id)
+    welcome_text = "👋 Welcome to the bot!\n\n"
+
+    if current_state == "idle":
+        welcome_text += "Press 'Setup' to configure your preferences."
+    elif current_state == "searching":
+        welcome_text += "You are currently searching for a partner. Press 'Stop Searching' to cancel."
+    elif current_state == "chatting":
+        welcome_text += "You are currently in a chat session. Press 'End Chat' to end the session."
+
     await message.answer(
-        text="👋 Welcome to the bot!\n\nLet's get started by configuring your setup!",
-        reply_markup=get_main_keyboard()
+        text=welcome_text,
+        reply_markup=get_main_keyboard(state=current_state)
     )
-    await show_setup_menu(message)
+
+    # Show the setup menu if the user is in 'idle'
+    if current_state == "idle":
+        await show_setup_menu(message)
 
 # Handle "Setup" button or command
 @router.message(F.text.in_({"⚙️ Setup", "/setup"}))
 async def handle_setup(message: Message):
-    """
-    Handle both the 'Setup' reply button and the /setup command.
-    """
+    """Handle both the 'Setup' reply button and the /setup command."""
     await show_setup_menu(message)
 
 async def show_setup_menu(message_or_callback):
@@ -228,14 +320,33 @@ async def handle_partner_setup(callback: CallbackQuery):
 # Handle "Back to Setup" inline button
 @router.callback_query(F.data == "setup")
 async def handle_back_to_setup(callback: CallbackQuery):
-    """
-    Return to the main Setup menu.
-    """
+    """Return to the main Setup menu."""
     await callback.message.edit_text(
         text="⚙️ Please choose your setup option:",
         reply_markup=get_setup_inline_keyboard()
     )
     await callback.answer()
+
+# Function to start searching with setup check
+async def start_searching(message: Message, user_id: int):
+    """Start the search process for a user after verifying setup completion."""
+    is_complete, missing_fields = is_setup_complete(user_id)
+    if not is_complete:
+        await message.answer(
+            text=f"⚠️ Please complete your setup before starting a match. Missing fields:\n- {', '.join(missing_fields)}\nRedirecting to setup menu...",
+            reply_markup=get_main_keyboard(state="idle")
+        )
+        await show_setup_menu(message)
+        return False
+
+    waiting_start_times[user_id] = datetime.datetime.now()
+    waiting_users.add(user_id)
+    await message.answer(
+        "🔍 Waiting for a compatible partner. You'll be matched automatically when one is found.",
+        reply_markup=get_main_keyboard(state="searching")
+    )
+    await attempt_match(user_id)
+    return True
 
 # Modified to prioritize users waiting longer and handle "Any" religion explicitly
 def find_match(user_id):
@@ -342,7 +453,7 @@ async def attempt_match(user_id):
                 f"🙏 Religion: {user_data_2.get('religion', 'Not set')}\n"
                 "Start messaging them now! Swipe left on a message to reply."
             ),
-            reply_markup=get_main_keyboard(is_begin=False),
+            reply_markup=get_main_keyboard(state="chatting"),
         )
         await bot.send_message(
             chat_id=match_id,
@@ -354,7 +465,7 @@ async def attempt_match(user_id):
                 f"🙏 Religion: {user_data_1.get('religion', 'Not set')}\n"
                 "Start messaging them now! Swipe left on a message to reply."
             ),
-            reply_markup=get_main_keyboard(is_begin=False),
+            reply_markup=get_main_keyboard(state="chatting"),
         )
 
         # Log match to private channel
@@ -391,80 +502,99 @@ async def attempt_match(user_id):
         return True
     return False
 
-@router.message(F.text.in_({"🚀 Begin", "🛑 End", "/end"}))
+# Handle matching buttons and commands with membership check for Begin
+@router.message(F.text.in_({BEGIN_TEXT, STOP_SEARCHING_TEXT, END_CHAT_TEXT, "/begin", "/end"}))
 async def handle_matching_button(message: Message):
     """
-    Handle dynamic 'Begin' (start matchmaking), 'End' button, and '/end' command.
-    Check if setup is complete before matching; apply 4-hour cooldown only for rematching with the same user.
-    Record waiting start time when beginning a match.
+    Handle dynamic buttons and commands for starting, stopping search, and ending chat.
+    Includes membership check for Begin actions.
     """
     user_id = message.from_user.id
+    text = message.text
+    current_state = get_user_state(user_id)
 
-    if message.text == "🚀 Begin":
-        if user_id in active_matches:
-            await message.answer("⚠️ You are already in a session. Please end it first.")
-            return
-
-        # Check if setup is complete
-        is_complete, missing_fields = is_setup_complete(user_id)
-        if not is_complete:
+    if text in [BEGIN_TEXT, "/begin"]:
+        if current_state != "idle":
             await message.answer(
-                text=(
-                    f"⚠️ Please complete your setup before starting a match. Missing fields:\n"
-                    f"- {', '.join(missing_fields)}\n"
-                    "Redirecting to setup menu..."
-                ),
-                reply_markup=get_main_keyboard(is_begin=True)
+                "⚠️ Invalid action for current state.",
+                reply_markup=get_main_keyboard(state=current_state)
             )
-            await show_setup_menu(message)
             return
-
-        # Record the waiting start time
-        waiting_start_times[user_id] = datetime.datetime.now()
-
-        # Attempt to find a match
-        if await attempt_match(user_id):
+        if not await is_group_member(user_id):
+            await send_join_group_message(message)
             return
-        else:
-            waiting_users.add(user_id)
+        await start_searching(message, user_id)
+
+    elif text == STOP_SEARCHING_TEXT:
+        if current_state != "searching":
             await message.answer(
-                "🔍 Waiting for a compatible partner. You'll be matched automatically when one is found.",
-                reply_markup=get_main_keyboard(is_begin=True)
+                "⚠️ Invalid action for current state.",
+                reply_markup=get_main_keyboard(state=current_state)
             )
+            return
+        waiting_users.remove(user_id)
+        waiting_start_times.pop(user_id, None)
+        await message.answer(
+            "🛑 You have stopped searching.",
+            reply_markup=get_main_keyboard(state="idle")
+        )
 
-    elif message.text in {"🛑 End", "/end"}:
-        if user_id in active_matches:
+    elif text == END_CHAT_TEXT:
+        if current_state != "chatting":
+            await message.answer(
+                "⚠️ Invalid action for current state.",
+                reply_markup=get_main_keyboard(state=current_state)
+            )
+            return
+        match_id = active_matches.pop(user_id)
+        active_matches.pop(match_id, None)
+        cooldown_period = datetime.timedelta(hours=4)
+        now = datetime.datetime.now()
+        cooldown_tracker.setdefault(user_id, {})[match_id] = now + cooldown_period
+        cooldown_tracker.setdefault(match_id, {})[user_id] = now + cooldown_period
+        message_id_map.pop(user_id, None)
+        message_id_map.pop(match_id, None)
+        await message.answer(
+            "❌ You have ended the session. You can 'Begin' again to find a new partner.",
+            reply_markup=get_main_keyboard(state="idle")
+        )
+        await bot.send_message(
+            chat_id=match_id,
+            text="❌ Your partner has ended the session. You can 'Begin' again to find a new partner.",
+            reply_markup=get_main_keyboard(state="idle")
+        )
+
+    elif text == "/end":
+        if current_state == "chatting":
             match_id = active_matches.pop(user_id)
             active_matches.pop(match_id, None)
-
-            # Set 4-hour cooldown for this specific user-partner pair
             cooldown_period = datetime.timedelta(hours=4)
             now = datetime.datetime.now()
             cooldown_tracker.setdefault(user_id, {})[match_id] = now + cooldown_period
             cooldown_tracker.setdefault(match_id, {})[user_id] = now + cooldown_period
-
-            # Clear message ID mappings for both users
-            print(f"🗑️ Clearing message_id_map for user {user_id} and {match_id}")
             message_id_map.pop(user_id, None)
             message_id_map.pop(match_id, None)
-
-            # Remove from waiting users and waiting start times
-            waiting_users.discard(user_id)
-            waiting_start_times.pop(user_id, None)
-
             await message.answer(
-                "❌ You have ended the session. You can 'Begin' again to find a new partner immediately.",
-                reply_markup=get_main_keyboard(is_begin=True))
+                "❌ You have ended the session. You can 'Begin' again to find a new partner.",
+                reply_markup=get_main_keyboard(state="idle")
+            )
             await bot.send_message(
                 chat_id=match_id,
-                text=(
-                    "❌ Your partner has ended the session. You can 'Begin' again to find a new partner immediately."
-                ),
-                reply_markup=get_main_keyboard(is_begin=True))
+                text="❌ Your partner has ended the session. You can 'Begin' again to find a new partner.",
+                reply_markup=get_main_keyboard(state="idle")
+            )
+        elif current_state == "searching":
+            waiting_users.remove(user_id)
+            waiting_start_times.pop(user_id, None)
+            await message.answer(
+                "🛑 You have stopped searching.",
+                reply_markup=get_main_keyboard(state="idle")
+            )
         else:
-            await message.answer("⚠️ You are not in an active session.")
-        waiting_users.discard(user_id)
-        waiting_start_times.pop(user_id, None)
+            await message.answer(
+                "⚠️ You are not in an active session or searching.",
+                reply_markup=get_main_keyboard(state="idle")
+            )
 
 # Handle "Help" button or command
 @router.message(F.text.in_({"❓ Help", "/help"}))
@@ -476,7 +606,8 @@ async def handle_help(message: Message):
         text=(
             "💡 Need assistance? Here's what you can do:\n"
             " - 🚀 Begin: Start your journey (after completing setup).\n"
-            " - 🛑 End: Stop chatting with your partner.\n"
+            " - 🛑 Stop Searching: Stop looking for a partner.\n"
+            " - 🛑 End Chat: Stop chatting with your partner.\n"
             " - ⚙️ Setup: Configure your preferences.\n"
             " - ❓ Help: Get guidance and information.\n"
             " - 📩 Reply: Swipe left on a message to reply to it."
@@ -496,20 +627,20 @@ async def forward_messages(message: Message):
 
     if user_id not in active_matches:
         print(f"⚠️ User {user_id} not in active_matches")
-        await message.answer("⚠️ You are not currently chatting with anyone. Press 'Begin' to find a partner.")
+        await message.answer(
+            "⚠️ You are not currently chatting with anyone. Press 'Begin' to find a partner.",
+            reply_markup=get_main_keyboard(state="idle")
+        )
         return
 
     partner_id = active_matches[user_id]
-    # Initialize message ID map for both users
     message_id_map.setdefault(user_id, {})
     message_id_map.setdefault(partner_id, {})
 
-    # Get sender's gender and create the label
     sender_gender = user_data.get(user_id, {}).get("gender", "Not set")
     gender_emoji = get_gender_emoji(sender_gender)
     label = f"Partner {gender_emoji}: "
 
-    # Check if this is a reply
     reply_to_message_id = None
     reply_info = ""
     if message.reply_to_message:
@@ -523,11 +654,9 @@ async def forward_messages(message: Message):
             print(f"✅ Found mapped reply_to_message_id: {reply_to_message_id} for user {user_id}")
             reply_info = f" (Reply to message ID {reply_to_message_id})"
 
-    # Fetch sender's name for logging
     user_info = await bot.get_chat(user_id)
     sender_name = user_info.first_name or user_info.username or f"User {user_id}"
 
-    # Prepare channel log message
     message_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     channel_message = f"💬 **Message** at {message_time}\n👤 From: {sender_name} (ID: {user_id}) to User ID: {partner_id}{reply_info}\n"
 
@@ -650,7 +779,6 @@ async def forward_messages(message: Message):
             print(f"📌 Mapped message ID {message.message_id} (user {user_id}) to {forwarded_message.message_id} (user {partner_id}) for sticker")
             channel_message += f"📜 Label: {label_text}\n🏷️ Sticker sent\n"
 
-        # Store the message ID mapping for other message types
         if forwarded_message and hasattr(forwarded_message, 'message_id') and message.content_type not in ('video_note', 'sticker'):
             message_id_map[user_id][message.message_id] = forwarded_message.message_id
             message_id_map[partner_id][forwarded_message.message_id] = message.message_id
@@ -662,7 +790,6 @@ async def forward_messages(message: Message):
         print(f"❌ Error forwarding message from {user_id} to {partner_id}: {e}")
         await message.answer("⚠️ Failed to send message. Please try again.")
 
-    # Log the original message to the private channel
     try:
         await bot.send_message(
             chat_id=CHANNEL_ID,
@@ -714,9 +841,7 @@ async def forward_messages(message: Message):
         print(f"❌ Error logging message to channel {CHANNEL_ID}: {e}")
 
 async def set_bot_commands():
-    """
-    Registers default bot commands that appear in the Telegram menu.
-    """
+    """Registers default bot commands that appear in the Telegram menu."""
     commands = [
         BotCommand(command="start", description="Start the bot"),
         BotCommand(command="begin", description="Begin your journey"),
@@ -728,9 +853,7 @@ async def set_bot_commands():
 
 @router.callback_query(F.data == "age")
 async def handle_age(callback: CallbackQuery):
-    """
-    Handle "Age" inline keyboard button.
-    """
+    """Handle "Age" inline keyboard button."""
     age_keyboard = InlineKeyboardMarkup(
         inline_keyboard=[
             [
@@ -751,9 +874,7 @@ async def handle_age(callback: CallbackQuery):
 
 @router.callback_query(F.data == "gender")
 async def handle_gender(callback: CallbackQuery):
-    """
-    Handle "Gender" inline keyboard button.
-    """
+    """Handle "Gender" inline keyboard button."""
     gender_keyboard = InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text="Male 🧑🏽‍🦱", callback_data="selected_gender_male")],
@@ -769,9 +890,7 @@ async def handle_gender(callback: CallbackQuery):
 
 @router.callback_query(F.data == "religion")
 async def handle_religion(callback: CallbackQuery):
-    """
-    Handle "Religion" inline keyboard button.
-    """
+    """Handle "Religion" inline keyboard button."""
     religion_keyboard = InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text="Orthodox", callback_data="selected_religion_orthodox")],
@@ -797,10 +916,9 @@ async def handle_age_selection(callback: CallbackQuery):
     if user_id not in user_data:
         user_data[user_id] = {}
     user_data[user_id]["age"] = selected_age
-    save_user_data_now()
+    update_user_data_now(user_id)  # Updated to MongoDB
     await callback.answer(text=f"Your age is {selected_age}", show_alert=True)
 
-    # Check for match if user is waiting
     if user_id in waiting_users and is_setup_complete(user_id)[0]:
         await attempt_match(user_id)
 
@@ -817,10 +935,9 @@ async def handle_gender_selection(callback: CallbackQuery):
     if user_id not in user_data:
         user_data[user_id] = {}
     user_data[user_id]["gender"] = selected_gender
-    save_user_data_now()
+    update_user_data_now(user_id)  # Updated to MongoDB
     await callback.answer(text=f"You selected {selected_gender}", show_alert=True)
 
-    # Check for match if user is waiting
     if user_id in waiting_users and is_setup_complete(user_id)[0]:
         await attempt_match(user_id)
 
@@ -837,7 +954,7 @@ async def handle_religion_selection(callback: CallbackQuery):
     if user_id not in user_data:
         user_data[user_id] = {}
     user_data[user_id]["religion"] = selected_religion
-    save_user_data_now()
+    update_user_data_now(user_id)  # Updated to MongoDB
     selected_age = user_data[user_id].get("age", "Not set")
     selected_gender = user_data[user_id].get("gender", "Not set")
     selected_religion = user_data[user_id].get("religion", "Not set")
@@ -851,7 +968,6 @@ async def handle_religion_selection(callback: CallbackQuery):
         )
     )
 
-    # Check for match if user is waiting
     if user_id in waiting_users and is_setup_complete(user_id)[0]:
         await attempt_match(user_id)
 
@@ -860,9 +976,7 @@ async def handle_religion_selection(callback: CallbackQuery):
 
 @router.callback_query(F.data == "partner_age")
 async def handle_partner_minimum_age(callback: CallbackQuery):
-    """
-    Handle the start of partner age selection by asking for the minimum age.
-    """
+    """Handle the start of partner age selection by asking for the minimum age."""
     age_keyboard = InlineKeyboardMarkup(
         inline_keyboard=[
             [
@@ -890,9 +1004,8 @@ async def handle_partner_maximum_age(callback: CallbackQuery):
     user_id = callback.from_user.id
     min_age = int(callback.data.split("_")[-1])
     user_data.setdefault(user_id, {}).setdefault("partner", {})["min_age"] = min_age
-    save_user_data_now()
+    update_user_data_now(user_id)  # Updated to MongoDB
 
-    # Check for match if user is waiting
     if user_id in waiting_users and is_setup_complete(user_id)[0]:
         await attempt_match(user_id)
 
@@ -927,13 +1040,12 @@ async def handle_partner_age_range(callback: CallbackQuery):
         await callback.message.answer("❌ Minimum age not set. Please start from minimum age selection.")
         return
     user_data[user_id]["partner"]["max_age"] = max_age
-    save_user_data_now()
+    update_user_data_now(user_id)  # Updated to MongoDB
     await callback.answer(
         text=f"🎉 Partner age range set: From {min_age} to {max_age}",
         show_alert=True
     )
 
-    # Check for match if user is waiting
     if user_id in waiting_users and is_setup_complete(user_id)[0]:
         await attempt_match(user_id)
 
@@ -941,9 +1053,7 @@ async def handle_partner_age_range(callback: CallbackQuery):
 
 @router.callback_query(F.data == "partner_gender")
 async def handle_partner_gender(callback: CallbackQuery):
-    """
-    Handle "Partner's Gender" inline keyboard button.
-    """
+    """Handle "Partner's Gender" inline keyboard button."""
     gender_keyboard = InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text="Male 🧑🏽‍🦱", callback_data="partner_gender_male")],
@@ -970,13 +1080,12 @@ async def handle_partner_gender_selection(callback: CallbackQuery):
     if "partner" not in user_data[user_id]:
         user_data[user_id]["partner"] = {}
     user_data[user_id]["partner"]["gender"] = selected_gender
-    save_user_data_now()
+    update_user_data_now(user_id)  # Updated to MongoDB
     await callback.answer(
         text=f"🎉 Partner's Gender set to: {selected_gender.capitalize()}",
         show_alert=True
     )
 
-    # Check for match if user is waiting
     if user_id in waiting_users and is_setup_complete(user_id)[0]:
         await attempt_match(user_id)
 
@@ -984,9 +1093,7 @@ async def handle_partner_gender_selection(callback: CallbackQuery):
 
 @router.callback_query(F.data == "partner_religion")
 async def handle_partner_religion(callback: CallbackQuery):
-    """
-    Display the Partner's religion selection menu.
-    """
+    """Display the Partner's religion selection menu."""
     religion_keyboard = InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text="Orthodox", callback_data="partner_religion_orthodox")],
@@ -1015,7 +1122,7 @@ async def handle_partner_religion_selection(callback: CallbackQuery):
     if "partner" not in user_data[user_id]:
         user_data[user_id]["partner"] = {}
     user_data[user_id]["partner"]["religion"] = selected_partner_religion
-    save_user_data_now()
+    update_user_data_now(user_id)  # Updated to MongoDB
     partner_min_age = user_data[user_id]["partner"].get("min_age", "Not set")
     partner_max_age = user_data[user_id]["partner"].get("max_age", "Not set")
     partner_gender = user_data[user_id]["partner"].get("gender", "Not set")
@@ -1030,7 +1137,6 @@ async def handle_partner_religion_selection(callback: CallbackQuery):
         )
     )
 
-    # Check for match if user is waiting
     if user_id in waiting_users and is_setup_complete(user_id)[0]:
         await attempt_match(user_id)
 
@@ -1039,9 +1145,7 @@ async def handle_partner_religion_selection(callback: CallbackQuery):
 
 @router.callback_query(F.data == "show_setup")
 async def handle_show_setup(callback: CallbackQuery):
-    """
-    Handle the "Show Setup" button to display results of both setups.
-    """
+    """Handle the "Show Setup" button to display results of both setups."""
     if callback.message.text.startswith("🛠️ Here is your setup:"):
         await callback.answer(text="⚠️ You are already in the Show Setup menu!", show_alert=True)
         return
@@ -1063,7 +1167,7 @@ async def handle_show_setup(callback: CallbackQuery):
         f"- 🚻 Partner Gender: {partner_gender}\n"
         f"- 🙏 Partner Religion: {partner_religion}"
     )
-    asyncio.create_task(save_user_data())
+    # Removed asyncio.create_task(save_user_data()) as updates are immediate
     await callback.message.edit_text(
         text=result_text,
         reply_markup=get_setup_inline_keyboard()
@@ -1078,7 +1182,7 @@ async def periodic_save():
         print("🔄 Performed periodic backup of user data")
 
 async def main():
-    load_user_data()
+    await load_user_data()  # Updated to async MongoDB load
     print("🤖 Bot is running...")
     print("💾 Individual data points will be saved immediately upon change")
     print("💾 Automatic backups will occur every minute")
