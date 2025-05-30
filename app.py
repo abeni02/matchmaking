@@ -1,4 +1,5 @@
 from flask import Flask
+import os
 
 app = Flask(__name__)
 
@@ -7,4 +8,6 @@ def hello_world():
     return 'Hello from Koyeb'
 
 if __name__ == '__main__':
-    app.run()
+    # Use the PORT environment variable provided by Koyeb, default to 8000 for local testing
+    port = int(os.getenv('PORT', 8000))
+    app.run(host='0.0.0.0', port=port)
