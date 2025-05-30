@@ -1,4 +1,4 @@
-aiogram==3.13.1
+aiogram
 flask==2.2.2
 werkzeug==2.3.8  # Pin to a version compatible with Flask 2.3.3
 gunicorn==21.2.0  # Optional, for running Flask on Heroku
