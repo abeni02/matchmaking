@@ -1,50 +1,20 @@
-from aiogram import Bot, Dispatcher, types
-from aiogram.filters import Command
-from aiohttp import web
-from motor.motor_asyncio import AsyncIOMotorClient
-import os
+from flask import Flask, request
+import telebot
 
-# MongoDB setup
-MONGODB_URI = os.getenv("MONGODB_URI")
-client = AsyncIOMotorClient(MONGODB_URI)
-db = client["telegram_bot_db"]
-users_collection = db["users"]
+app = Flask(__name__)
+bot = telebot.TeleBot("YOUR_BOT_TOKEN")
 
-# Bot setup
-bot = Bot(token=os.getenv("BOT_TOKEN"))
-dp = Dispatcher()
+@app.route('/webhook', methods=['POST'])
+def webhook():
+    update = telebot.types.Update.de_json(request.get_json())
+    bot.process_new_updates([update])
+    return 'OK', 200
 
-# Telegram /start handler
-@dp.message(Command(commands=["start"]))
-async def start(message: types.Message):
-    user_id = message.from_user.id
-    user = await users_collection.find_one({"user_id": user_id})
-    if not user:
-        await users_collection.insert_one({"user_id": user_id, "message_count": 1})
-        await message.reply("Welcome! You're now registered.")
-    else:
-        await users_collection.update_one({"user_id": user_id}, {"$inc": {"message_count": 1}})
-        count = (await users_collection.find_one({"user_id": user_id}))["message_count"]
-        await message.reply(f"You've sent {count} messages.")
-
-# Webhook handler for Telegram updates
-async def handle_webhook(request):
-    update = await request.json()
-    await dp.feed_raw_update(bot, update)
-    return web.Response()
-
-# Mimic Flask's / route
-async def hello_world(request):
-    return web.Response(text="Hello from KOYE!")
-
-# Ping route for uptime monitoring
-async def ping(request):
-    return web.Response(text="Bot is alive")
-
-app = web.Application()
-app.router.add_post('/', handle_webhook)  # Telegram webhooks
-app.router.add_get('/', hello_world)      # Mimics Flask's route
-app.router.add_get('/ping', ping)         # Uptime monitoring
+@bot.message_handler(commands=['start'])
+def handle_start(message):
+    bot.reply_to(message, "Hello! I'm awake!")
 
 if __name__ == '__main__':
-    web.run_app(app, host='0.0.0.0', port=8080)
+    bot.remove_webhook()  # Clear any existing webhook
+    bot.set_webhook(url='https://your-domain.com/webhook')  # Set webhook URL
+    app.run(debug=True)
