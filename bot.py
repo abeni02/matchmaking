@@ -4,12 +4,10 @@ from aiogram.types import (
     InlineKeyboardMarkup,
     InlineKeyboardButton,
     CallbackQuery,
-    BotCommand,
     ReplyKeyboardMarkup,
     KeyboardButton
 )
 import asyncio
-import json
 import os
 import datetime
 from motor.motor_asyncio import AsyncIOMotorClient  # Added for MongoDB
@@ -188,8 +186,10 @@ def get_user_state(user_id):
         return "idle"
 
 # Define the Reply Keyboard with dynamic state-based buttons
-def get_main_keyboard(state="idle"):
-    """Returns a layout for the main menu based on the user's state: 'idle' ('Begin'), 'searching' ('Stop Searching'), 'chatting' ('End Chat')."""
+def get_main_keyboard(state="idle", chat_type="private"):
+    """Returns a layout for the main menu based on the user's state, or None for group chats."""
+    if chat_type in ["group", "supergroup"]:
+        return None  # No reply keyboard in group chats
     if state == "idle":
         action_text = BEGIN_TEXT
     elif state == "searching":
@@ -197,8 +197,7 @@ def get_main_keyboard(state="idle"):
     elif state == "chatting":
         action_text = END_CHAT_TEXT
     else:
-        action_text = BEGIN_TEXT  # Default to idle
-
+        action_text = BEGIN_TEXT
     return ReplyKeyboardMarkup(
         keyboard=[
             [KeyboardButton(text=action_text), KeyboardButton(text="⚙️ Setup")],
