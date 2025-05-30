@@ -840,16 +840,21 @@ async def forward_messages(message: Message):
     except Exception as e:
         print(f"❌ Error logging message to channel {CHANNEL_ID}: {e}")
 
+from aiogram.types import BotCommand, BotCommandScopeAllPrivateChats
+
 async def set_bot_commands():
-    """Registers default bot commands that appear in the Telegram menu."""
+    """Registers default bot commands for private chats only."""
     commands = [
         BotCommand(command="start", description="Start the bot"),
         BotCommand(command="begin", description="Begin your journey"),
         BotCommand(command="setup", description="Set up your preferences"),
         BotCommand(command="help", description="Get help or assistance"),
-        BotCommand(command="end", description="End your session")
+        BotCommand(command="end", description="End your session"),
+        BotCommand(command="group", description="View group information and options")
     ]
-    await bot.set_my_commands(commands)
+    # Set commands for all private chats
+    await bot.set_my_commands(commands, scope=BotCommandScopeAllPrivateChats())
+    print("✅ Bot commands set for private chats only")
 
 @router.callback_query(F.data == "age")
 async def handle_age(callback: CallbackQuery):
