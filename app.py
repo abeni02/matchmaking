@@ -7,9 +7,9 @@ import logging
 
 # Set up logging for better debugging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-logger = logging.getLogger(name)
+logger = logging.getLogger(__name__)  # Use __name__ instead of undefined 'name'
 
-app = Flask(name)
+app = Flask(__name__)  # Use __name__ for Flask initialization
 
 @app.route('/')
 def hello_world():
@@ -30,7 +30,7 @@ def keep_alive():
             logger.error(f"Ping to {url} failed: {e}")
         time.sleep(300)  # Ping every 5 minutes to prevent sleep
 
-if name == 'main':
+if __name__ == '__main__':  # Correct main block syntax
     # Start keep-alive thread
     logger.info("Starting keep-alive thread")
     threading.Thread(target=keep_alive, daemon=True).start()
@@ -38,4 +38,4 @@ if name == 'main':
     # Get port from environment variable (Koyeb sets PORT) or default to 8080
     port = int(os.getenv('PORT', 8080))
     logger.info(f"Starting Flask app on port {port}")
-    app.run(host='0.0.0.0', port=port)
+    app.run(host='0.0.0.0', port=port)  # Only for local development
