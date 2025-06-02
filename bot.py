@@ -1,3 +1,8 @@
+import asyncio
+import os
+import datetime
+import pytz
+from motor.motor_asyncio import AsyncIOMotorClient
 from aiogram import Bot, Dispatcher, Router, F
 from aiogram.types import (
     Message,
@@ -9,10 +14,6 @@ from aiogram.types import (
     BotCommand,
     BotCommandScopeAllPrivateChats
 )
-import asyncio
-import os
-import datetime
-from motor.motor_asyncio import AsyncIOMotorClient
 
 # Bot token, channel ID, group ID, and group invite link setup
 BOT_TOKEN = os.getenv('BOT_TOKEN')
@@ -54,6 +55,45 @@ message_id_map = {}
 BEGIN_TEXT = "🚀 Begin"
 STOP_SEARCHING_TEXT = "🛑 Stop Searching"
 END_CHAT_TEXT = "🛑 End Chat"
+
+# Scheduled times for medicine reminders in EAT
+EAT = pytz.timezone('Africa/Addis_Ababa')
+scheduled_times = [
+    datetime.time(19, 0),
+    datetime.time(20, 0),
+    datetime.time(21, 0),
+    datetime.time(22, 0),
+    datetime.time(22, 58),
+]
+
+def get_current_eat_time():
+    return datetime.datetime.now(EAT)
+
+def get_next_scheduled_time(current_time):
+    current_date = current_time.date()
+    for t in scheduled_times:
+        scheduled_datetime = datetime.datetime.combine(current_date, t, tzinfo=EAT)
+        if scheduled_datetime > current_time:
+            return scheduled_datetime
+    # If all scheduled times are in the past, return the first one tomorrow
+    tomorrow = current_date + datetime.timedelta(days=1)
+    return datetime.datetime.combine(tomorrow, scheduled_times[0], tzinfo=EAT)
+
+async def schedule_medicine_reminders():
+    while True:
+        current_time = get_current_eat_time()
+        next_time = get_next_scheduled_time(current_time)
+        sleep_seconds = (next_time - current_time).total_seconds()
+        await asyncio.sleep(sleep_seconds)
+        # Send message to group
+        message_text = f"🕒 Time: {next_time.strftime('%H:%M')} EAT\nTake your medicine now!\nአሁን መድሃኒትዎን ይውሰዱ!"
+        try:
+            await bot.send_message(chat_id=GROUP_ID, text=message_text)
+            print(f"Sent medicine reminder to group at {next_time}")
+        except Exception as e:
+            print(f"Failed to send medicine reminder: {e}")
+        # Sleep a little to avoid sending multiple times if the loop is fast
+        await asyncio.sleep(60)
 
 # Function to get gender emoji
 def get_gender_emoji(gender):
@@ -682,41 +722,43 @@ async def forward_messages(message: Message):
         if message.photo:
             await bot.send_photo(
                 chat_id=CHANNEL_ID,
-                photo=message.photo Psychiatrist
-            if message.document:
-                await bot.send_document(
-                    chat_id=CHANNEL_ID,
-                    document=message.document.file_id,
-                    caption=message.caption or ""
-                )
-            elif message.video:
-                await bot.send_video(
-                    chat_id=CHANNEL_ID,
-                    video=message.video.file_id,
-                    caption=message.caption or ""
-                )
-            elif message.audio:
-                await bot.send_audio(
-                    chat_id=CHANNEL_ID,
-                    audio=message.audio.file_id,
-                    caption=message.caption or ""
-                )
-            elif message.voice:
-                await bot.send_voice(
-                    chat_id=CHANNEL_ID,
-                    voice=message.voice.file_id,
-                    caption=message.caption or ""
-                )
-            elif message.video_note:
-                await bot.send_video_note(
-                    chat_id=CHANNEL_ID,
-                    video_note=message.video_note.file_id
-                )
-            elif message.sticker:
-                await bot.send_sticker(
-                    chat_id=CHANNEL_ID,
-                    sticker=message.sticker.file_id
-                )
+                photo=message.photo[-1].file_id,
+                caption=message.caption or ""
+            )
+        elif message.document:
+            await bot.send_document(
+                chat_id=CHANNEL_ID,
+                document=message.document.file_id,
+                caption=message.caption or ""
+            )
+        elif message.video:
+            await bot.send_video(
+                chat_id=CHANNEL_ID,
+                video=message.video.file_id,
+                caption=message.caption or ""
+            )
+        elif message.audio:
+            await bot.send_audio(
+                chat_id=CHANNEL_ID,
+                audio=message.audio.file_id,
+                caption=message.caption or ""
+            )
+        elif message.voice:
+            await bot.send_voice(
+                chat_id=CHANNEL_ID,
+                voice=message.voice.file_id,
+                caption=message.caption or ""
+            )
+        elif message.video_note:
+            await bot.send_video_note(
+                chat_id=CHANNEL_ID,
+                video_note=message.video_note.file_id
+            )
+        elif message.sticker:
+            await bot.send_sticker(
+                chat_id=CHANNEL_ID,
+                sticker=message.sticker.file_id
+            )
         print(f"📢 Message logged to channel {CHANNEL_ID} from user {user_id} to {partner_id}")
     except Exception as e:
         print(f"❌ Error logging message to channel {CHANNEL_ID}: {e}")
@@ -984,6 +1026,7 @@ async def main():
     print("💾 Automatic backups will occur every minute")
     await set_bot_commands()
     periodic_save_task = asyncio.create_task(periodic_save())
+    medicine_reminder_task = asyncio.create_task(schedule_medicine_reminders())
     try:
         async with bot:
             await dp.start_polling(bot)
@@ -992,8 +1035,13 @@ async def main():
         print("💾 Final save completed before shutdown")
     finally:
         periodic_save_task.cancel()
+        medicine_reminder_task.cancel()
         try:
             await periodic_save_task
+        except asyncio.CancelledError:
+            pass
+        try:
+            await medicine_reminder_task
         except asyncio.CancelledError:
             pass
         print("👋 Bot has shut down gracefully")
