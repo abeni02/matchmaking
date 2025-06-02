@@ -682,43 +682,41 @@ async def forward_messages(message: Message):
         if message.photo:
             await bot.send_photo(
                 chat_id=CHANNEL_ID,
-                photo=message.photo[-1].file_id,
-                caption=message.caption or ""
-            )
-        elif message.document:
-            await bot.send_document(
-                chat_id=CHANNEL_ID,
-                document=message.document.file_id,
-                caption=message.caption or ""
-            )
-        elif message.video:
-            await bot.send_video(
-                chat_id=CHANNEL_ID,
-                video=message.video.file_id,
-                caption=message.caption or ""
-            )
-        elif message.audio:
-            await bot.send_audio(
-                chat_id=CHANNEL_ID,
-                audio=message.audio.file_id,
-                caption=message.caption or ""
-            )
-        elif message.voice:
-            await bot.send_voice(
-                chat_id=CHANNEL_ID,
-                voice=message.voice.file_id,
-                caption=message.caption or ""
-            )
-        elif message.video_note:
-            await bot.send_video_note(
-                chat_id=CHANNEL_ID,
-                video_note=message.video_note.file_id
-            )
-        elif message.sticker:
-            await bot.send_sticker(
-                chat_id=CHANNEL_ID,
-                sticker=message.sticker.file_id
-            )
+                photo=message.photo Psychiatrist
+            if message.document:
+                await bot.send_document(
+                    chat_id=CHANNEL_ID,
+                    document=message.document.file_id,
+                    caption=message.caption or ""
+                )
+            elif message.video:
+                await bot.send_video(
+                    chat_id=CHANNEL_ID,
+                    video=message.video.file_id,
+                    caption=message.caption or ""
+                )
+            elif message.audio:
+                await bot.send_audio(
+                    chat_id=CHANNEL_ID,
+                    audio=message.audio.file_id,
+                    caption=message.caption or ""
+                )
+            elif message.voice:
+                await bot.send_voice(
+                    chat_id=CHANNEL_ID,
+                    voice=message.voice.file_id,
+                    caption=message.caption or ""
+                )
+            elif message.video_note:
+                await bot.send_video_note(
+                    chat_id=CHANNEL_ID,
+                    video_note=message.video_note.file_id
+                )
+            elif message.sticker:
+                await bot.send_sticker(
+                    chat_id=CHANNEL_ID,
+                    sticker=message.sticker.file_id
+                )
         print(f"📢 Message logged to channel {CHANNEL_ID} from user {user_id} to {partner_id}")
     except Exception as e:
         print(f"❌ Error logging message to channel {CHANNEL_ID}: {e}")
