@@ -5,7 +5,9 @@ from aiogram.types import (
     InlineKeyboardButton,
     CallbackQuery,
     ReplyKeyboardMarkup,
-    KeyboardButton
+    KeyboardButton,
+    BotCommand,
+    BotCommandScopeAllPrivateChats
 )
 import asyncio
 import os
@@ -225,10 +227,14 @@ def get_setup_inline_keyboard():
 async def start_command(message: Message):
     """
     Handle the /start command:
+    - Check if the chat is private.
     - Check if the user is a member of the private group.
     - If not, prompt them to join.
     - If yes, send welcome message based on the user's current state and show setup menu if idle.
     """
+    chat_type = message.chat.type
+    if chat_type in ["group", "supergroup"]:
+        return  # Do not respond in group chats
     user_id = message.from_user.id
     if not await is_group_member(user_id):
         await send_join_group_message(message)
@@ -246,7 +252,7 @@ async def start_command(message: Message):
 
     await message.answer(
         text=welcome_text,
-        reply_markup=get_main_keyboard(state=current_state)
+        reply_markup=get_main_keyboard(state=current_state, chat_type=chat_type)
     )
 
     # Show the setup menu if the user is in 'idle'
@@ -257,6 +263,9 @@ async def start_command(message: Message):
 @router.message(F.text.in_({"⚙️ Setup", "/setup"}))
 async def handle_setup(message: Message):
     """Handle both the 'Setup' reply button and the /setup command."""
+    chat_type = message.chat.type
+    if chat_type in ["group", "supergroup"]:
+        return  # Do not respond in group chats
     await show_setup_menu(message)
 
 async def show_setup_menu(message_or_callback):
@@ -333,7 +342,7 @@ async def start_searching(message: Message, user_id: int):
     if not is_complete:
         await message.answer(
             text=f"⚠️ Please complete your setup before starting a match. Missing fields:\n- {', '.join(missing_fields)}\nRedirecting to setup menu...",
-            reply_markup=get_main_keyboard(state="idle")
+            reply_markup=get_main_keyboard(state="idle", chat_type=message.chat.type)
         )
         await show_setup_menu(message)
         return False
@@ -342,7 +351,7 @@ async def start_searching(message: Message, user_id: int):
     waiting_users.add(user_id)
     await message.answer(
         "🔍 Waiting for a compatible partner. You'll be matched automatically when one is found.",
-        reply_markup=get_main_keyboard(state="searching")
+        reply_markup=get_main_keyboard(state="searching", chat_type=message.chat.type)
     )
     await attempt_match(user_id)
     return True
@@ -452,7 +461,7 @@ async def attempt_match(user_id):
                 f"🙏 Religion: {user_data_2.get('religion', 'Not set')}\n"
                 "Start messaging them now! Swipe left on a message to reply."
             ),
-            reply_markup=get_main_keyboard(state="chatting"),
+            reply_markup=get_main_keyboard(state="chatting", chat_type="private"),
         )
         await bot.send_message(
             chat_id=match_id,
@@ -464,7 +473,7 @@ async def attempt_match(user_id):
                 f"🙏 Religion: {user_data_1.get('religion', 'Not set')}\n"
                 "Start messaging them now! Swipe left on a message to reply."
             ),
-            reply_markup=get_main_keyboard(state="chatting"),
+            reply_markup=get_main_keyboard(state="chatting", chat_type="private"),
         )
 
         # Log match to private channel
@@ -508,6 +517,9 @@ async def handle_matching_button(message: Message):
     Handle dynamic buttons and commands for starting, stopping search, and ending chat.
     Includes membership check for Begin actions.
     """
+    chat_type = message.chat.type
+    if chat_type in ["group", "supergroup"]:
+        return  # Do not respond in group chats
     user_id = message.from_user.id
     text = message.text
     current_state = get_user_state(user_id)
@@ -516,7 +528,7 @@ async def handle_matching_button(message: Message):
         if current_state != "idle":
             await message.answer(
                 "⚠️ Invalid action for current state.",
-                reply_markup=get_main_keyboard(state=current_state)
+                reply_markup=get_main_keyboard(state=current_state, chat_type=chat_type)
             )
             return
         if not await is_group_member(user_id):
@@ -528,21 +540,21 @@ async def handle_matching_button(message: Message):
         if current_state != "searching":
             await message.answer(
                 "⚠️ Invalid action for current state.",
-                reply_markup=get_main_keyboard(state=current_state)
+                reply_markup=get_main_keyboard(state=current_state, chat_type=chat_type)
             )
             return
         waiting_users.remove(user_id)
         waiting_start_times.pop(user_id, None)
         await message.answer(
             "🛑 You have stopped searching.",
-            reply_markup=get_main_keyboard(state="idle")
+            reply_markup=get_main_keyboard(state="idle", chat_type=chat_type)
         )
 
     elif text == END_CHAT_TEXT:
         if current_state != "chatting":
             await message.answer(
                 "⚠️ Invalid action for current state.",
-                reply_markup=get_main_keyboard(state=current_state)
+                reply_markup=get_main_keyboard(state=current_state, chat_type=chat_type)
             )
             return
         match_id = active_matches.pop(user_id)
@@ -555,12 +567,12 @@ async def handle_matching_button(message: Message):
         message_id_map.pop(match_id, None)
         await message.answer(
             "❌ You have ended the session. You can 'Begin' again to find a new partner.",
-            reply_markup=get_main_keyboard(state="idle")
+            reply_markup=get_main_keyboard(state="idle", chat_type=chat_type)
         )
         await bot.send_message(
             chat_id=match_id,
             text="❌ Your partner has ended the session. You can 'Begin' again to find a new partner.",
-            reply_markup=get_main_keyboard(state="idle")
+            reply_markup=get_main_keyboard(state="idle", chat_type="private")
         )
 
     elif text == "/end":
@@ -575,24 +587,24 @@ async def handle_matching_button(message: Message):
             message_id_map.pop(match_id, None)
             await message.answer(
                 "❌ You have ended the session. You can 'Begin' again to find a new partner.",
-                reply_markup=get_main_keyboard(state="idle")
+                reply_markup=get_main_keyboard(state="idle", chat_type=chat_type)
             )
             await bot.send_message(
                 chat_id=match_id,
                 text="❌ Your partner has ended the session. You can 'Begin' again to find a new partner.",
-                reply_markup=get_main_keyboard(state="idle")
+                reply_markup=get_main_keyboard(state="idle", chat_type="private")
             )
         elif current_state == "searching":
             waiting_users.remove(user_id)
             waiting_start_times.pop(user_id, None)
             await message.answer(
                 "🛑 You have stopped searching.",
-                reply_markup=get_main_keyboard(state="idle")
+                reply_markup=get_main_keyboard(state="idle", chat_type=chat_type)
             )
         else:
             await message.answer(
                 "⚠️ You are not in an active session or searching.",
-                reply_markup=get_main_keyboard(state="idle")
+                reply_markup=get_main_keyboard(state="idle", chat_type=chat_type)
             )
 
 # Handle "Help" button or command
@@ -601,6 +613,9 @@ async def handle_help(message: Message):
     """
     Handle both the 'Help' button and the /help command.
     """
+    chat_type = message.chat.type
+    if chat_type in ["group", "supergroup"]:
+        return  # Do not respond in group chats
     await message.answer(
         text=(
             "💡 Need assistance? Here's what you can do:\n"
@@ -619,6 +634,9 @@ async def forward_messages(message: Message):
     Forward messages between matched users anonymously, with "Partner" label first, no hyphen, and message beside it.
     Supports replies, logs original messages to CHANNEL_ID, and protects content.
     """
+    chat_type = message.chat.type
+    if chat_type in ["group", "supergroup"]:
+        return  # Do not process messages from group chats
     user_id = message.from_user.id
     print(f"📩 Received message from {user_id}, type: {message.content_type}")
     print(f"📋 Active matches: {active_matches}")
@@ -628,7 +646,7 @@ async def forward_messages(message: Message):
         print(f"⚠️ User {user_id} not in active_matches")
         await message.answer(
             "⚠️ You are not currently chatting with anyone. Press 'Begin' to find a partner.",
-            reply_markup=get_main_keyboard(state="idle")
+            reply_markup=get_main_keyboard(state="idle", chat_type=chat_type)
         )
         return
 
@@ -838,8 +856,6 @@ async def forward_messages(message: Message):
         print(f"📢 Message logged to channel {CHANNEL_ID} from user {user_id} to {partner_id}")
     except Exception as e:
         print(f"❌ Error logging message to channel {CHANNEL_ID}: {e}")
-
-from aiogram.types import BotCommand, BotCommandScopeAllPrivateChats
 
 async def set_bot_commands():
     """Registers default bot commands for private chats only."""
