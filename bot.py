@@ -644,38 +644,35 @@ async def forward_messages(message: Message):
             message_id_map[partner_id][forwarded_message.message_id] = message.message_id
             print(f"📌 Mapped message ID {message.message_id} (user {user_id}) to {forwarded_message.message_id} (user {partner_id}) for video note")
             channel_message += f"📜 Label: {label_text}\n🎥 Video note sent\n"
-elif message.sticker:
-    print(f"🏷️ Forwarding sticker from {user_id} to {partner_id}, file_id: {message.sticker.file_id}")
-    label_text = f"Partner {gender_emoji}:"
-    try:
-        # Send label message
-        await bot.send_message(
-            chat_id=partner_id,
-            text=label_text,
-            reply_to_message_id=reply_to_message_id,
-            protect_content=True
-        )
-        # Send sticker
-        forwarded_message = await bot.send_sticker(
-            chat_id=partner_id,
-            sticker=message.sticker.file_id,
-            reply_to_message_id=reply_to_message_id,
-            protect_content=True
-        )
-        # Map message IDs
-        if forwarded_message and hasattr(forwarded_message, 'message_id'):
+        elif message.sticker:
+            print(f"🏷️ Forwarding sticker from {user_id} to {partner_id}")
+            label_text = f"Partner {gender_emoji}:"
+            await bot.send_message(
+                chat_id=partner_id,
+                text=label_text,
+                reply_to_message_id=reply_to_message_id,
+                protect_content=True
+            )
+            forwarded_message = await bot.send_sticker(
+                chat_id=partner_id,
+                sticker=message.sticker.file_id,
+                reply_to_message_id=reply_to_message_id,
+                protect_content=True
+            )
             message_id_map[user_id][message.message_id] = forwarded_message.message_id
             message_id_map[partner_id][forwarded_message.message_id] = message.message_id
             print(f"📌 Mapped message ID {message.message_id} (user {user_id}) to {forwarded_message.message_id} (user {partner_id}) for sticker")
+            channel_message += f"📜 Label: {label_text}\n🏷️ Sticker sent\n"
+        if forwarded_message and hasattr(forwarded_message, 'message_id') and message.content_type not in ('video_note', 'sticker'):
+            message_id_map[user_id][message.message_id] = forwarded_message.message_id
+            message_id_map[partner_id][forwarded_message.message_id] = message.message_id
+            print(f"📌 Mapped message ID {message.message_id} (user {user_id}) to {forwarded_message.message_id} (user {partner_id})")
         else:
-            print(f"❌ No valid forwarded_message for sticker from {user_id}")
-            channel_message += "❌ Failed to map sticker message ID\n"
-            await message.answer("⚠️ Sticker sent, but message mapping failed. Please try again.")
-        channel_message += f"📜 Label: {label_text}\n🏷️ Sticker sent\n"
+            print(f"⚠️ Failed to map message ID for {user_id}: No valid forwarded_message")
     except Exception as e:
-        print(f"❌ Failed to forward sticker from {user_id} to {partner_id}: {e}")
-        channel_message += f"❌ Failed to send sticker: {str(e)}\n"
-        await message.answer("⚠️ Failed to send sticker. Please try again.")
+        print(f"❌ Error forwarding message from {user_id} to {partner_id}: {e}")
+        await message.answer("⚠️ Failed to send message. Please try again.")
+
     try:
         await bot.send_message(
             chat_id=CHANNEL_ID,
