@@ -1,6 +1,6 @@
 import asyncio
 import os
-import datetime import time
+import datetime, time
 from motor.motor_asyncio import AsyncIOMotorClient
 from aiogram import Bot, Dispatcher, Router, F, types
 from aiogram.types import (
