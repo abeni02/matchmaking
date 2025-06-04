@@ -1,4 +1,8 @@
-from aiogram import Bot, Dispatcher, Router, F
+import asyncio
+import os
+import datetime
+from motor.motor_asyncio import AsyncIOMotorClient
+from aiogram import Bot, Dispatcher, Router, F, types
 from aiogram.types import (
     Message,
     InlineKeyboardMarkup,
@@ -9,18 +13,31 @@ from aiogram.types import (
     BotCommand,
     BotCommandScopeAllPrivateChats
 )
-import asyncio
-import os
-import datetime
-from motor.motor_asyncio import AsyncIOMotorClient
+import random
+import logging
+import time
+from datetime import datetime, time
+from aiogram.filters import Command
+from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
 
-# Bot token, channel ID, group ID, and group invite link setup
+# Configure logging to use UTC time (from scheduling script, assumed compatible with main script)
+formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+formatter.converter = time.gmtime  # Use UTC time
+handler = logging.StreamHandler()
+handler.setFormatter(formatter)
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
+logger.addHandler(handler)
+
+# Environment variables (extended to include scheduling chat ID)
 BOT_TOKEN = os.getenv('BOT_TOKEN')
 CHANNEL_ID = os.getenv('CHANNEL_ID')
 GROUP_ID = os.getenv('GROUP_ID')
 GROUP_INVITE_LINK = os.getenv('GROUP_INVITE_LINK')
 MONGODB_URI = os.getenv('MONGODB_URI')
+SCHEDULE_CHAT_ID = os.getenv('SCHEDULE_CHAT_ID')  # Added for scheduling
 
+# Validate environment variables
 if not BOT_TOKEN:
     raise ValueError("No BOT_TOKEN found in environment variables. Please set it securely.")
 if not CHANNEL_ID:
@@ -31,7 +48,10 @@ if not GROUP_INVITE_LINK:
     raise ValueError("No GROUP_INVITE_LINK found in environment variables. Please set it securely.")
 if not MONGODB_URI:
     raise ValueError("No MONGODB_URI found in environment variables. Please set it securely.")
+if not SCHEDULE_CHAT_ID:
+    raise ValueError("No SCHEDULE_CHAT_ID found in environment variables. Please set it securely.")
 
+# Bot and dispatcher setup
 bot = Bot(token=BOT_TOKEN)
 router = Router()
 dp = Dispatcher()
@@ -42,7 +62,7 @@ client = AsyncIOMotorClient(MONGODB_URI)
 db = client['bot_database']
 users_collection = db['users']
 
-# Initialize data structures
+# Initialize data structures (from main script)
 user_data = {}
 active_matches = {}
 cooldown_tracker = {}
@@ -50,12 +70,35 @@ waiting_users = set()
 waiting_start_times = {}
 message_id_map = {}
 
-# Button texts
+# Button texts (from main script)
 BEGIN_TEXT = "🚀 Begin"
 STOP_SEARCHING_TEXT = "🛑 Stop Searching"
 END_CHAT_TEXT = "🛑 End Chat"
 
-# Function to get gender emoji
+# Global variables for scheduling (from scheduling script)
+MESSAGES = [
+    "Hey team, time for a quick sync! What's the latest?",
+    "It's time to check in! Any updates to share?",
+    "Hello everyone, let's touch base! What's on your mind?",
+    "Time for our daily catch-up! What's new with you all?"
+]
+
+target_times = [
+    time(9, 21),   # 12:21 PM EAT = 9:21 AM UTC
+    time(8, 17),   # 11:17 AM EAT = 8:17 AM UTC
+    time(8, 18),   # 11:18 AM EAT = 8:18 AM UTC
+    time(8, 19),   # 11:19 AM EAT = 8:19 AM UTC
+    time(11, 30)   # 2:30 PM EAT = 11:30 AM UTC (for testing)
+]
+
+last_sent_dates = {target: None for target in target_times}
+
+# Placeholder sticker ID (update with a valid file_id obtained via the sticker handler)
+STICKER_ID = 'CAACAgIAAxkBAAIBB2cF5x1234567890ABCDEFGHIJKLMNOPQRSTUVWXYZ'
+
+# Function definitions (all unchanged)
+
+## From main script
 def get_gender_emoji(gender):
     if gender.lower() == "male":
         return "👨"
@@ -64,7 +107,6 @@ def get_gender_emoji(gender):
     else:
         return "❓"
 
-# Function to save all user data to MongoDB (for periodic save)
 async def save_user_data():
     for user_id, data in user_data.items():
         try:
@@ -77,7 +119,6 @@ async def save_user_data():
             print(f"❌ Error saving user {user_id} to MongoDB: {e}")
     print(f"✅ All user data saved to MongoDB")
 
-# Function to update a single user's data in MongoDB
 async def update_user_data(user_id):
     if user_id in user_data:
         user_info = user_data[user_id]
@@ -93,11 +134,9 @@ async def update_user_data(user_id):
     else:
         print(f"⚠️ User {user_id} not found in user_data")
 
-# Function for immediate (non-awaited) saving of a single user's data
 def update_user_data_now(user_id):
     asyncio.create_task(update_user_data(user_id))
 
-# Function to load user data from MongoDB
 async def load_user_data():
     global user_data
     user_data = {}
@@ -109,7 +148,6 @@ async def load_user_data():
     except Exception as e:
         print(f"❌ Error loading user data from MongoDB: {e}")
 
-# Helper function to check if a user is a group member
 async def is_group_member(user_id: int) -> bool:
     try:
         member = await bot.get_chat_member(chat_id=GROUP_ID, user_id=user_id)
@@ -118,7 +156,6 @@ async def is_group_member(user_id: int) -> bool:
         print(f"Error checking group membership for user {user_id}: {e}")
         return False
 
-# Function to send join group message
 async def send_join_group_message(message: Message):
     join_button = InlineKeyboardButton(text="Join Group", url=GROUP_INVITE_LINK)
     join_keyboard = InlineKeyboardMarkup(inline_keyboard=[[join_button]])
@@ -127,7 +164,6 @@ async def send_join_group_message(message: Message):
         reply_markup=join_keyboard
     )
 
-# Helper function to check if setup is complete
 def is_setup_complete(user_id):
     if user_id not in user_data:
         return False, ["Age", "Gender", "Religion", "Partner Minimum Age", "Partner Maximum Age", "Partner Gender", "Partner Religion"]
@@ -152,7 +188,6 @@ def is_setup_complete(user_id):
             missing_fields.append("Partner Religion")
     return len(missing_fields) == 0, missing_fields
 
-# Helper function to get user state
 def get_user_state(user_id):
     if user_id in active_matches:
         return "chatting"
@@ -161,7 +196,6 @@ def get_user_state(user_id):
     else:
         return "idle"
 
-# Define the Reply Keyboard with dynamic state-based buttons
 def get_main_keyboard(state="idle", chat_type="private"):
     if chat_type in ["group", "supergroup"]:
         return None
@@ -181,7 +215,6 @@ def get_main_keyboard(state="idle", chat_type="private"):
         resize_keyboard=True
     )
 
-# Define the Inline Keyboard for Setup options
 def get_setup_inline_keyboard():
     return InlineKeyboardMarkup(
         inline_keyboard=[
@@ -190,33 +223,6 @@ def get_setup_inline_keyboard():
             [InlineKeyboardButton(text="Show Profile", callback_data="show_setup")],
         ]
     )
-
-# Define the /start command with membership check
-@router.message(F.chat.type == "private", F.text == "/start")
-async def start_command(message: Message):
-    user_id = message.from_user.id
-    if not await is_group_member(user_id):
-        await send_join_group_message(message)
-        return
-    current_state = get_user_state(user_id)
-    welcome_text = "👋 Welcome to the bot!\n\n"
-    if current_state == "idle":
-        welcome_text += "Press 'Setup' to configure your preferences."
-    elif current_state == "searching":
-        welcome_text += "You are currently searching for a partner. Press 'Stop Searching' to cancel."
-    elif current_state == "chatting":
-        welcome_text += "You are currently in a chat session. Press 'End Chat' to end the session."
-    await message.answer(
-        text=welcome_text,
-        reply_markup=get_main_keyboard(state=current_state)
-    )
-    if current_state == "idle":
-        await show_setup_menu(message)
-
-# Handle "Setup" button or command
-@router.message(F.chat.type == "private", F.text.in_({"⚙️ Setup", "/setup"}))
-async def handle_setup(message: Message):
-    await show_setup_menu(message)
 
 async def show_setup_menu(message_or_callback):
     if isinstance(message_or_callback, Message):
@@ -231,50 +237,6 @@ async def show_setup_menu(message_or_callback):
         )
         await message_or_callback.answer()
 
-# Handle "Your Setup" inline button
-@router.callback_query(F.data == "your_setup")
-async def handle_your_setup(callback: CallbackQuery):
-    inline_keyboard = InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text="Age", callback_data="age")],
-            [InlineKeyboardButton(text="Gender", callback_data="gender")],
-            [InlineKeyboardButton(text="Religion", callback_data="religion")],
-            [InlineKeyboardButton(text="⬅️ Back", callback_data="setup")],
-        ]
-    )
-    await callback.message.edit_text(
-        text="🔧 You selected 'Your Setup'. Choose an option below to configure:",
-        reply_markup=inline_keyboard
-    )
-    await callback.answer()
-
-# Handle "Partner Setup" inline button
-@router.callback_query(F.data == "partner_setup")
-async def handle_partner_setup(callback: CallbackQuery):
-    partner_setup_keyboard = InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text="Age", callback_data="partner_age")],
-            [InlineKeyboardButton(text="Gender", callback_data="partner_gender")],
-            [InlineKeyboardButton(text="Religion", callback_data="partner_religion")],
-            [InlineKeyboardButton(text="⬅️ Back", callback_data="setup")],
-        ]
-    )
-    await callback.message.edit_text(
-        text="🤝 You selected 'Partner Setup'. Configure partner preferences below:",
-        reply_markup=partner_setup_keyboard
-    )
-    await callback.answer()
-
-# Handle "Back to Setup" inline button
-@router.callback_query(F.data == "setup")
-async def handle_back_to_setup(callback: CallbackQuery):
-    await callback.message.edit_text(
-        text="⚙️ Please choose your setup option:",
-        reply_markup=get_setup_inline_keyboard()
-    )
-    await callback.answer()
-
-# Function to start searching with setup check
 async def start_searching(message: Message, user_id: int):
     is_complete, missing_fields = is_setup_complete(user_id)
     if not is_complete:
@@ -293,7 +255,6 @@ async def start_searching(message: Message, user_id: int):
     await attempt_match(user_id)
     return True
 
-# Modified to prioritize users waiting longer and handle "Any" religion explicitly
 def find_match(user_id):
     if user_id not in user_data:
         return None
@@ -409,7 +370,109 @@ async def attempt_match(user_id):
         return True
     return False
 
-# Handle matching buttons and commands with membership check for Begin
+## From scheduling script
+def seconds_since_midnight(t):
+    return t.hour * 3600 + t.minute * 60 + t.second
+
+async def send_scheduled_message():
+    while True:
+        now = datetime.utcnow()
+        current_date = now.date()
+        current_time = now.time()
+        current_seconds = seconds_since_midnight(current_time)
+
+        for target in target_times:
+            target_seconds = seconds_since_midnight(target)
+            time_diff = abs(current_seconds - target_seconds)
+            if time_diff < 60 and (last_sent_dates[target] is None or last_sent_dates[target] < current_date):
+                current_time_str = now.strftime("%H:%M:%S")
+                message = random.choice(MESSAGES)
+                full_message = f"[{current_time_str} UTC] {message}"
+                try:
+                    await bot.send_sticker(chat_id=SCHEDULE_CHAT_ID, sticker=STICKER_ID)
+                    await bot.send_message(chat_id=SCHEDULE_CHAT_ID, text=full_message)
+                    logging.info(f"Sticker and message sent at {current_time_str} UTC: {full_message}")
+                    last_sent_dates[target] = current_date
+                except TelegramBadRequest as e:
+                    logging.error(f"Bad request error: {e}")
+                    if "wrong remote file identifier" in str(e).lower():
+                        logging.error("Invalid STICKER_ID. Send a sticker to the bot to get a valid file_id.")
+                except TelegramForbiddenError as e:
+                    logging.error(f"Forbidden error: {e}. Check bot permissions.")
+                except Exception as e:
+                    logging.error(f"Unexpected error: {e}")
+                await asyncio.sleep(60)  # Wait to avoid multiple sends
+
+        await asyncio.sleep(30)  # Check every 30 seconds
+
+# Handler definitions (all unchanged)
+
+## From main script
+@router.message(F.chat.type == "private", F.text == "/start")
+async def start_command(message: Message):
+    user_id = message.from_user.id
+    if not await is_group_member(user_id):
+        await send_join_group_message(message)
+        return
+    current_state = get_user_state(user_id)
+    welcome_text = "👋 Welcome to the bot!\n\n"
+    if current_state == "idle":
+        welcome_text += "Press 'Setup' to configure your preferences."
+    elif current_state == "searching":
+        welcome_text += "You are currently searching for a partner. Press 'Stop Searching' to cancel."
+    elif current_state == "chatting":
+        welcome_text += "You are currently in a chat session. Press 'End Chat' to end the session."
+    await message.answer(
+        text=welcome_text,
+        reply_markup=get_main_keyboard(state=current_state)
+    )
+    if current_state == "idle":
+        await show_setup_menu(message)
+
+@router.message(F.chat.type == "private", F.text.in_({"⚙️ Setup", "/setup"}))
+async def handle_setup(message: Message):
+    await show_setup_menu(message)
+
+@router.callback_query(F.data == "your_setup")
+async def handle_your_setup(callback: CallbackQuery):
+    inline_keyboard = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="Age", callback_data="age")],
+            [InlineKeyboardButton(text="Gender", callback_data="gender")],
+            [InlineKeyboardButton(text="Religion", callback_data="religion")],
+            [InlineKeyboardButton(text="⬅️ Back", callback_data="setup")],
+        ]
+    )
+    await callback.message.edit_text(
+        text="🔧 You selected 'Your Setup'. Choose an option below to configure:",
+        reply_markup=inline_keyboard
+    )
+    await callback.answer()
+
+@router.callback_query(F.data == "partner_setup")
+async def handle_partner_setup(callback: CallbackQuery):
+    partner_setup_keyboard = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="Age", callback_data="partner_age")],
+            [InlineKeyboardButton(text="Gender", callback_data="partner_gender")],
+            [InlineKeyboardButton(text="Religion", callback_data="partner_religion")],
+            [InlineKeyboardButton(text="⬅️ Back", callback_data="setup")],
+        ]
+    )
+    await callback.message.edit_text(
+        text="🤝 You selected 'Partner Setup'. Configure partner preferences below:",
+        reply_markup=partner_setup_keyboard
+    )
+    await callback.answer()
+
+@router.callback_query(F.data == "setup")
+async def handle_back_to_setup(callback: CallbackQuery):
+    await callback.message.edit_text(
+        text="⚙️ Please choose your setup option:",
+        reply_markup=get_setup_inline_keyboard()
+    )
+    await callback.answer()
+
 @router.message(F.chat.type == "private", F.text.in_({BEGIN_TEXT, STOP_SEARCHING_TEXT, END_CHAT_TEXT, "/begin", "/end"}))
 async def handle_matching_button(message: Message):
     user_id = message.from_user.id
@@ -495,7 +558,6 @@ async def handle_matching_button(message: Message):
                 reply_markup=get_main_keyboard(state="idle")
             )
 
-# Handle "Help" button or command
 @router.message(F.chat.type == "private", F.text.in_({"❓ Help", "/help"}))
 async def handle_help(message: Message):
     await message.answer(
@@ -723,12 +785,10 @@ async def forward_messages(message: Message):
     except Exception as e:
         print(f"❌ Error logging message to channel {CHANNEL_ID}: {e}")
 
-# Optional: Explicitly ignore messages in group chats
 @router.message(F.chat.type.in_({"group", "supergroup"}))
 async def ignore_group_messages(message: Message):
     pass
 
-# Set bot commands for private chats only
 async def set_bot_commands():
     commands = [
         BotCommand(command="start", description="Start the bot"),
@@ -741,7 +801,6 @@ async def set_bot_commands():
     await bot.set_my_commands(commands, scope=BotCommandScopeAllPrivateChats())
     print("✅ Bot commands set for private chats only")
 
-# Callback query handlers
 @router.callback_query(F.data == "age")
 async def handle_age(callback: CallbackQuery):
     age_keyboard = InlineKeyboardMarkup(
@@ -979,6 +1038,18 @@ async def periodic_save():
         await save_user_data()
         print("🔄 Performed periodic backup of user data")
 
+## From scheduling script
+@dp.message(Command('start'))
+async def start_command(message: types.Message):
+    await message.reply("Bot is running and will send stickers and messages at scheduled times.")
+
+@dp.message(F.sticker)
+async def sticker_handler(message: types.Message):
+    sticker_id = message.sticker.file_id
+    await message.reply(f"Sticker ID: {sticker_id}")
+    logging.info(f"Received sticker with file_id: {sticker_id}")
+
+# Main function (modified to include scheduling task)
 async def main():
     await load_user_data()
     print("🤖 Bot is running...")
@@ -986,6 +1057,7 @@ async def main():
     print("💾 Automatic backups will occur every minute")
     await set_bot_commands()
     periodic_save_task = asyncio.create_task(periodic_save())
+    scheduling_task = asyncio.create_task(send_scheduled_message())  # Added scheduling task
     try:
         async with bot:
             await dp.start_polling(bot)
@@ -994,8 +1066,10 @@ async def main():
         print("💾 Final save completed before shutdown")
     finally:
         periodic_save_task.cancel()
+        scheduling_task.cancel()
         try:
             await periodic_save_task
+            await scheduling_task
         except asyncio.CancelledError:
             pass
         print("👋 Bot has shut down gracefully")
