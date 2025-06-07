@@ -52,8 +52,8 @@ message_id_map = {}
 
 # Button texts
 BEGIN_TEXT = "🚀 Begin"
-STOP_SEARCHING_TEXT = "🛑 Stop Searching"
-END_CHAT_TEXT = "🛑 End Chat"
+STOP_SEARCHING_TEXT = "⏹️ Stop Searching"
+END_CHAT_TEXT = "🔚 End Chat"
 
 # Function to get gender emoji
 def get_gender_emoji(gender):
@@ -123,7 +123,7 @@ async def send_join_group_message(message: Message):
     join_button = InlineKeyboardButton(text="Join Group", url=GROUP_INVITE_LINK)
     join_keyboard = InlineKeyboardMarkup(inline_keyboard=[[join_button]])
     await message.answer(
-        text="This bot is exclusive to members of our private group. Please join the group to use the bot.",
+        text=" Please join the group to use the bot.",
         reply_markup=join_keyboard
     )
 
@@ -199,7 +199,7 @@ async def start_command(message: Message):
         await send_join_group_message(message)
         return
     current_state = get_user_state(user_id)
-    welcome_text = "👋 Welcome to the bot!\n\n"
+    welcome_text = "👋 Welcome to our matchmaking bot! Discover your perfect match based on your preferences.n\n"
     if current_state == "idle":
         welcome_text += "Press 'Setup' to configure your preferences."
     elif current_state == "searching":
@@ -287,7 +287,7 @@ async def start_searching(message: Message, user_id: int):
     waiting_start_times[user_id] = datetime.datetime.now()
     waiting_users.add(user_id)
     await message.answer(
-        "🔍 Waiting for a compatible partner. You'll be matched automatically when one is found.",
+        "🔍 Waiting for a partner. ",
         reply_markup=get_main_keyboard(state="searching")
     )
     await attempt_match(user_id)
@@ -361,7 +361,7 @@ async def attempt_match(user_id):
                 f"📅 Age: {user_data_2.get('age', 'Not set')}\n"
                 f"🚻 Gender: {user_data_2.get('gender', 'Not set')}\n"
                 f"🙏 Religion: {user_data_2.get('religion', 'Not set')}\n"
-                "Start messaging them now! Swipe left on a message to reply."
+                "You can Start messaging."
             ),
             reply_markup=get_main_keyboard(state="chatting"),
         )
@@ -373,7 +373,7 @@ async def attempt_match(user_id):
                 f"📅 Age: {user_data_1.get('age', 'Not set')}\n"
                 f"🚻 Gender: {user_data_1.get('gender', 'Not set')}\n"
                 f"🙏 Religion: {user_data_1.get('religion', 'Not set')}\n"
-                "Start messaging them now! Swipe left on a message to reply."
+                "You Can Start messaging ."
             ),
             reply_markup=get_main_keyboard(state="chatting"),
         )
@@ -502,11 +502,11 @@ async def handle_help(message: Message):
         text=(
             "💡 Need assistance? Here's what you can do:\n"
             " - 🚀 Begin: Start your journey (after completing setup).\n"
-            " - 🛑 Stop Searching: Stop looking for a partner.\n"
-            " - 🛑 End Chat: Stop chatting with your partner.\n"
+            " - ⏹️ Stop Searching: Stop looking for a partner.\n"
+            " - 🔚 End Chat: Stop chatting with your partner.\n"
             " - ⚙️ Setup: Configure your preferences.\n"
             " - ❓ Help: Get guidance and information.\n"
-            " - 📩 Reply: Swipe left on a message to reply to it."
+            " - 📩 ask or feedback: https://t.me/ask_or_feedback ."
         )
     )
 
@@ -946,7 +946,7 @@ async def handle_partner_religion_selection(callback: CallbackQuery):
 
 @router.callback_query(F.data == "show_setup")
 async def handle_show_setup(callback: CallbackQuery):
-    if callback.message.text.startswith("🛠️ Here is your setup:"):
+    if callback.message.text.startswith("🛠️ Here is your Profile:"):
         await callback.answer(text="⚠️ You are already in the Show Setup menu!", show_alert=True)
         return
     user_id = callback.from_user.id
@@ -958,7 +958,7 @@ async def handle_show_setup(callback: CallbackQuery):
     partner_gender = user_data.get(user_id, {}).get("partner", {}).get("gender", "Not set")
     partner_religion = user_data.get(user_id, {}).get("partner", {}).get("religion", "Not set")
     result_text = (
-        f"🛠️ Here is your setup:\n"
+        f"🛠️ Here is your Profile:\n"
         f"- 📅 Your Age: {your_age}\n"
         f"- 🚻 Your Gender: {your_gender}\n"
         f"- 🙏 Your Religion: {your_religion}\n\n"
