@@ -725,7 +725,7 @@ async def forward_messages(message: Message):
 
 # Optional: Explicitly ignore messages in group chats
 @router.message(F.chat.type.in_({"group", "supergroup"}))
-async def ignore_group_messages(message: Message):
+async def ignore_group_messages(_message: Message):
     pass
 
 # Set bot commands for private chats only
