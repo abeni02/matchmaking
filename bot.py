@@ -199,7 +199,7 @@ async def start_command(message: Message):
         await send_join_group_message(message)
         return
     current_state = get_user_state(user_id)
-    welcome_text = "👋 Welcome to our matchmaking bot! Discover your perfect match based on your preferences.n\n"
+    welcome_text = "👋 Welcome to our matchmaking bot! Discover your perfect match based on your preferences. n\n"
     if current_state == "idle":
         welcome_text += "Press 'Setup' to configure your preferences."
     elif current_state == "searching":
