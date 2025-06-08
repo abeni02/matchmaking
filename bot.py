@@ -416,16 +416,21 @@ async def handle_matching_button(message: Message):
     text = message.text
     current_state = get_user_state(user_id)
     if text in [BEGIN_TEXT, "/begin"]:
-        if current_state != "idle":
+        if current_state == "searching":
+            await message.answer(
+                "🔍 You are already searching for a partner. Please wait.",
+                reply_markup=get_main_keyboard(state="searching")
+            )
+        elif current_state != "idle":
             await message.answer(
                 "⚠️ Invalid action for current state.",
                 reply_markup=get_main_keyboard(state=current_state)
             )
-            return
-        if not await is_group_member(user_id):
-            await send_join_group_message(message)
-            return
-        await start_searching(message, user_id)
+        else:
+            if not await is_group_member(user_id):
+                await send_join_group_message(message)
+                return
+            await start_searching(message, user_id)
     elif text == STOP_SEARCHING_TEXT:
         if current_state != "searching":
             await message.answer(
@@ -494,7 +499,6 @@ async def handle_matching_button(message: Message):
                 "⚠️ You are not in an active session or searching.",
                 reply_markup=get_main_keyboard(state="idle")
             )
-
 # Handle "Help" button or command
 @router.message(F.chat.type == "private", F.text.in_({"❓ Help", "/help"}))
 async def handle_help(message: Message):
