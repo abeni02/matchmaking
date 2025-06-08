@@ -58,9 +58,9 @@ END_CHAT_TEXT = "🔚 End Chat"
 # Function to get gender emoji
 def get_gender_emoji(gender):
     if gender.lower() == "male":
-        return "🧑🏽‍🦱""
+        return "👨"
     elif gender.lower() == "female":
-        return "👩🏽‍🦰"
+        return "👩"
     else:
         return "❓"
 
@@ -220,7 +220,7 @@ async def handle_setup(message: Message):
 
 async def show_setup_menu(message_or_callback):
     if isinstance(message_or_callback, Message):
-        await message_or_callback.answer(6
+        await message_or_callback.answer(
             text="⚙️ Please choose your setup option:",
             reply_markup=get_setup_inline_keyboard()
         )
@@ -949,7 +949,7 @@ async def handle_partner_religion_selection(callback: CallbackQuery):
 
 @router.callback_query(F.data == "show_setup")
 async def handle_show_setup(callback: CallbackQuery):
-    if callback.message.text.startswith("🛠️ Here is your Profile:"):
+    if callback.message.text.startswith("👤 Here is your Profile:"):
         await callback.answer(text="⚠️ You are already in the Show Setup menu!", show_alert=True)
         return
     user_id = callback.from_user.id
