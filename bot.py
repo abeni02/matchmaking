@@ -961,7 +961,7 @@ async def handle_show_setup(callback: CallbackQuery):
     partner_gender = user_data.get(user_id, {}).get("partner", {}).get("gender", "Not set")
     partner_religion = user_data.get(user_id, {}).get("partner", {}).get("religion", "Not set")
     result_text = (
-        f"🛠️ Here is your Profile:\n"
+        f" 👤 Here is your Profile:\n"
         f"- 📅 Your Age: {your_age}\n"
         f"- 🚻 Your Gender: {your_gender}\n"
         f"- 🙏 Your Religion: {your_religion}\n\n"
