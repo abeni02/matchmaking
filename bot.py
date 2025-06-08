@@ -510,7 +510,7 @@ async def handle_help(message: Message):
             " - 🔚 End Chat: Stop chatting with your partner.\n"
             " - ⚙️ Setup: Configure your preferences.\n"
             " - ❓ Help: Get guidance and information.\n"
-            " - 📩 ask or feedback: https://t.me/ask_or_feedback ."
+            " - 📩 ask or feedback: @Ask_and_feedback_bot ."
         )
     )
 
