@@ -199,7 +199,7 @@ async def start_command(message: Message):
         await send_join_group_message(message)
         return
     current_state = get_user_state(user_id)
-    welcome_text = "👋 Welcome to our matchmaking bot! Discover your perfect match based on your preferences.n\n"
+    welcome_text = "👋 Welcome to our matchmaking bot! Discover your perfect match based on your preferences.\n\n"
     if current_state == "idle":
         welcome_text += "Press 'Setup' to configure your preferences."
     elif current_state == "searching":
@@ -499,6 +499,7 @@ async def handle_matching_button(message: Message):
                 "⚠️ You are not in an active session or searching.",
                 reply_markup=get_main_keyboard(state="idle")
             )
+
 # Handle "Help" button or command
 @router.message(F.chat.type == "private", F.text.in_({"❓ Help", "/help"}))
 async def handle_help(message: Message):
@@ -513,6 +514,15 @@ async def handle_help(message: Message):
             " - 📩 ask or feedback: https://t.me/ask_or_feedback ."
         )
     )
+
+# New function to delete messages after a delay
+async def delete_after_delay(chat_id, message_id, delay):
+    await asyncio.sleep(delay)
+    try:
+        await bot.delete_message(chat_id, message_id)
+        print(f"🗑️ Deleted message {message_id} in chat {chat_id} after {delay} seconds")
+    except Exception as e:
+        print(f"❌ Failed to delete message {message_id} in chat {chat_id}: {e}")
 
 @router.message(F.chat.type == "private", F.text | F.document | F.photo | F.video | F.audio | F.voice | F.video_note | F.sticker)
 async def forward_messages(message: Message):
@@ -572,6 +582,8 @@ async def forward_messages(message: Message):
                 reply_to_message_id=reply_to_message_id,
                 protect_content=True
             )
+            # Schedule deletion for receiver after 30 seconds
+            asyncio.create_task(delete_after_delay(partner_id, forwarded_message.message_id, 30))
             channel_message += f"🖼️ Photo sent\n"
             if message.caption:
                 channel_message += f"📝 Caption: {message.caption}\n"
