@@ -366,7 +366,7 @@ async def attempt_match(user_id):
                 f"🙏 Religion: {user_data_2.get('religion', 'Not set')}\n"
                 "You can Start messaging."
             ),
-            reply_markup=get_main_keyboard(state recomendations="chatting"),
+           reply_markup=get_main_keyboard(state="chatting"),
         )
         await bot.send_message(
             chat_id=match_id,
