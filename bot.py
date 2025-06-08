@@ -55,6 +55,9 @@ BEGIN_TEXT = "🚀 Begin"
 STOP_SEARCHING_TEXT = "⏹️ Stop Searching"
 END_CHAT_TEXT = "🔚 End Chat"
 
+# Constant for photo disappearance delay
+PHOTO_DISAPPEAR_DELAY = 30  # seconds
+
 # Function to get gender emoji
 def get_gender_emoji(gender):
     if gender.lower() == "male":
@@ -199,7 +202,7 @@ async def start_command(message: Message):
         await send_join_group_message(message)
         return
     current_state = get_user_state(user_id)
-    welcome_text = "👋 Welcome to our matchmaking bot! Discover your perfect match based on your preferences. \n"
+    welcome_text = "👋 Welcome to our matchmaking bot! Discover your perfect match based on your preferences.n\n"
     if current_state == "idle":
         welcome_text += "Press 'Setup' to configure your preferences."
     elif current_state == "searching":
@@ -363,7 +366,7 @@ async def attempt_match(user_id):
                 f"🙏 Religion: {user_data_2.get('religion', 'Not set')}\n"
                 "You can Start messaging."
             ),
-            reply_markup=get_main_keyboard(state="chatting"),
+            reply_markup=get_main_keyboard(state recomendations="chatting"),
         )
         await bot.send_message(
             chat_id=match_id,
@@ -499,6 +502,7 @@ async def handle_matching_button(message: Message):
                 "⚠️ You are not in an active session or searching.",
                 reply_markup=get_main_keyboard(state="idle")
             )
+
 # Handle "Help" button or command
 @router.message(F.chat.type == "private", F.text.in_({"❓ Help", "/help"}))
 async def handle_help(message: Message):
@@ -513,6 +517,15 @@ async def handle_help(message: Message):
             " - 📩 ask or feedback: https://t.me/ask_or_feedback ."
         )
     )
+
+# Helper function to delete message after a delay
+async def delete_message_after_delay(chat_id, message_id, delay):
+    await asyncio.sleep(delay)
+    try:
+        await bot.delete_message(chat_id=chat_id, message_id=message_id)
+        print(f"🗑️ Deleted message {message_id} in chat {chat_id} after {delay} seconds")
+    except Exception as e:
+        print(f"❌ Error deleting message {message_id} in chat {chat_id}: {e}")
 
 @router.message(F.chat.type == "private", F.text | F.document | F.photo | F.video | F.audio | F.voice | F.video_note | F.sticker)
 async def forward_messages(message: Message):
@@ -564,7 +577,7 @@ async def forward_messages(message: Message):
         elif message.photo:
             print(f"📸 Forwarding photo from {user_id} to {partner_id}")
             caption = message.caption or ""
-            modified_caption = label + caption
+            modified_caption = label + caption + f"\n\n(This photo will disappear in {PHOTO_DISAPPEAR_DELAY} seconds.)"
             forwarded_message = await bot.send_photo(
                 chat_id=partner_id,
                 photo=message.photo[-1].file_id,
@@ -572,7 +585,9 @@ async def forward_messages(message: Message):
                 reply_to_message_id=reply_to_message_id,
                 protect_content=True
             )
-            channel_message += f"🖼️ Photo sent\n"
+            # Schedule deletion after PHOTO_DISAPPEAR_DELAY seconds
+            asyncio.create_task(delete_message_after_delay(partner_id, forwarded_message.message_id, PHOTO_DISAPPEAR_DELAY))
+            channel_message += f"🖼️ Photo sent (will disappear in {PHOTO_DISAPPEAR_DELAY} seconds)\n"
             if message.caption:
                 channel_message += f"📝 Caption: {message.caption}\n"
         elif message.document:
@@ -745,7 +760,7 @@ async def set_bot_commands():
     print("✅ Bot commands set for private chats only")
 
 # Callback query handlers
-@router.callback_query(F.data == "age")
+@router.callback_query(F and(F.data == "age")
 async def handle_age(callback: CallbackQuery):
     age_keyboard = InlineKeyboardMarkup(
         inline_keyboard=[
