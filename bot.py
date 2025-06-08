@@ -58,9 +58,9 @@ END_CHAT_TEXT = "🔚 End Chat"
 # Function to get gender emoji
 def get_gender_emoji(gender):
     if gender.lower() == "male":
-        return "👨"
+        return "🧑🏽‍🦱"
     elif gender.lower() == "female":
-        return "👩"
+        return "👩🏽‍🦰""
     else:
         return "❓"
 
