@@ -418,7 +418,7 @@ async def handle_matching_button(message: Message):
     if text in [BEGIN_TEXT, "/begin"]:
         if current_state == "searching":
             await message.answer(
-                "🔍 You are already searching for a partner. Please wait.",
+                " personally🔍 You are already searching for a partner. Please wait.",
                 reply_markup=get_main_keyboard(state="searching")
             )
         elif current_state != "idle":
@@ -499,6 +499,7 @@ async def handle_matching_button(message: Message):
                 "⚠️ You are not in an active session or searching.",
                 reply_markup=get_main_keyboard(state="idle")
             )
+
 # Handle "Help" button or command
 @router.message(F.chat.type == "private", F.text.in_({"❓ Help", "/help"}))
 async def handle_help(message: Message):
@@ -514,6 +515,7 @@ async def handle_help(message: Message):
         )
     )
 
+# Updated forward_messages function with disappearing feature
 @router.message(F.chat.type == "private", F.text | F.document | F.photo | F.video | F.audio | F.voice | F.video_note | F.sticker)
 async def forward_messages(message: Message):
     user_id = message.from_user.id
@@ -570,9 +572,10 @@ async def forward_messages(message: Message):
                 photo=message.photo[-1].file_id,
                 caption=modified_caption,
                 reply_to_message_id=reply_to_message_id,
-                protect_content=True
+                protect_content=True,
+                self_destruct_period=10  # Added for disappearing feature
             )
-            channel_message += f"🖼️ Photo sent\n"
+            channel_message += f"🖼️ Photo sent (Disappears after 10 seconds)\n"
             if message.caption:
                 channel_message += f"📝 Caption: {message.caption}\n"
         elif message.document:
@@ -596,9 +599,10 @@ async def forward_messages(message: Message):
                 video=message.video.file_id,
                 caption=modified_caption,
                 reply_to_message_id=reply_to_message_id,
-                protect_content=True
+                protect_content=True,
+                self_destruct_period=10  # Added for disappearing feature
             )
-            channel_message += f"🎥 Video sent\n"
+            channel_message += f"🎥 Video sent (Disappears after 10 seconds)\n"
             if message.caption:
                 channel_message += f"📝 Caption: {message.caption}\n"
         elif message.audio:
@@ -642,12 +646,13 @@ async def forward_messages(message: Message):
                 chat_id=partner_id,
                 video_note=message.video_note.file_id,
                 reply_to_message_id=reply_to_message_id,
-                protect_content=True
+                protect_content=True,
+                self_destruct_period=10  # Added for disappearing feature
             )
             message_id_map[user_id][message.message_id] = forwarded_message.message_id
             message_id_map[partner_id][forwarded_message.message_id] = message.message_id
             print(f"📌 Mapped message ID {message.message_id} (user {user_id}) to {forwarded_message.message_id} (user {partner_id}) for video note")
-            channel_message += f"📜 Label: {label_text}\n🎥 Video note sent\n"
+            channel_message += f"📜 Label: {label_text}\n🎥 Video note sent (Disappears after 10 seconds)\n"
         elif message.sticker:
             print(f"🏷️ Forwarding sticker from {user_id} to {partner_id}")
             label_text = f"Partner {gender_emoji}:"
@@ -942,7 +947,7 @@ async def handle_partner_religion_selection(callback: CallbackQuery):
             "Returning to the Setup menu..."
         )
     )
-    if user_id in waiting_users and is_setup_complete(user_id)[0]:
+    if user_id in waiting_users and is_setup_complete(user\\[0] is_setup_complete(user_id)[0]:
         await attempt_match(user_id)
     await asyncio.sleep(5)
     await handle_back_to_setup(callback)
