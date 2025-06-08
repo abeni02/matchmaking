@@ -49,6 +49,8 @@ cooldown_tracker = {}
 waiting_users = set()
 waiting_start_times = {}
 message_id_map = {}
+pending_photos = {}  # {user_id: {'file_id': str, 'caption': str, 'original_message_id': int, 'reply_to_message_id': int}}
+custom_timer_users = set()  # Tracks users inputting custom timers
 
 # Button texts
 BEGIN_TEXT = "🚀 Begin"
@@ -366,6 +368,10 @@ async def attempt_match(user_id):
             reply_markup=get_main_keyboard(state="chatting"),
         )
         await bot.send_message(
+            chat_id=user_id,
+            text="📸 Note: When sending photos, you can choose a self-destruct timer for added privacy."
+        )
+        await bot.send_message(
             chat_id=match_id,
             text=(
                 f"🎉 Match found!\n\n"
@@ -376,6 +382,10 @@ async def attempt_match(user_id):
                 "You Can Start messaging ."
             ),
             reply_markup=get_main_keyboard(state="chatting"),
+        )
+        await bot.send_message(
+            chat_id=match_id,
+            text="📸 Note: When sending photos, you can choose a self-destruct timer for added privacy."
         )
         match_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         channel_message = (
@@ -499,6 +509,7 @@ async def handle_matching_button(message: Message):
                 "⚠️ You are not in an active session or searching.",
                 reply_markup=get_main_keyboard(state="idle")
             )
+
 # Handle "Help" button or command
 @router.message(F.chat.type == "private", F.text.in_({"❓ Help", "/help"}))
 async def handle_help(message: Message):
@@ -510,9 +521,56 @@ async def handle_help(message: Message):
             " - 🔚 End Chat: Stop chatting with your partner.\n"
             " - ⚙️ Setup: Configure your preferences.\n"
             " - ❓ Help: Get guidance and information.\n"
-            " - 📩 ask or feedback: https://t.me/ask_or_feedback ."
+            " - 📩 ask or feedback: https://t.me/ask_or_feedback .\n"
+            " - 📸 Photos: When sending photos, you can set a self-destruct timer for privacy."
         )
     )
+
+# Function to send photo with timer
+async def send_photo_to_partner(user_id, partner_id, photo_info, ttl_seconds=None):
+    file_id = photo_info['file_id']
+    caption = photo_info.get('caption', '')
+    reply_to_message_id = photo_info.get('reply_to_message_id')
+    sender_gender = user_data.get(user_id, {}).get("gender", "Not set")
+    gender_emoji = get_gender_emoji(sender_gender)
+    label = f"Partner {gender_emoji}: "
+    modified_caption = label + caption
+    try:
+        forwarded_message = await bot.send_photo(
+            chat_id=partner_id,
+            photo=file_id,
+            caption=modified_caption,
+            reply_to_message_id=reply_to_message_id,
+            protect_content=True,
+            ttl_seconds=ttl_seconds if ttl_seconds else None
+        )
+        message_id_map[user_id][photo_info['original_message_id']] = forwarded_message.message_id
+        message_id_map[partner_id][forwarded_message.message_id] = photo_info['original_message_id']
+        print(f"📌 Mapped message ID {photo_info['original_message_id']} (user {user_id}) to {forwarded_message.message_id} (user {partner_id})")
+        user_info = await bot.get_chat(user_id)
+        sender_name = user_info.first_name or user_info.username or f"User {user_id}"
+        message_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        channel_message = f"💬 **Photo Message** at {message_time}\n👤 From: {sender_name} (ID: {user_id}) to User ID: {partner_id}\n"
+        if ttl_seconds:
+            channel_message += f"⏳ Timer: {ttl_seconds} seconds\n"
+        else:
+            channel_message += f"⏳ Timer: None\n"
+        if caption:
+            channel_message += f"📝 Caption: {caption}\n"
+        await bot.send_message(
+            chat_id=CHANNEL_ID,
+            text=channel_message,
+            parse_mode="Markdown"
+        )
+        await bot.send_photo(
+            chat_id=CHANNEL_ID,
+            photo=file_id,
+            caption=caption or ""
+        )
+        print(f"📢 Photo message logged to channel {CHANNEL_ID} from user {user_id} to {partner_id}")
+    except Exception as e:
+        print(f"❌ Error sending photo from {user_id} to {partner_id}: {e}")
+        await bot.send_message(user_id, "⚠️ Failed to send photo. Please try again.")
 
 @router.message(F.chat.type == "private", F.text | F.document | F.photo | F.video | F.audio | F.voice | F.video_note | F.sticker)
 async def forward_messages(message: Message):
@@ -562,19 +620,31 @@ async def forward_messages(message: Message):
             )
             channel_message += f"📜 Text: {message.text}\n"
         elif message.photo:
-            print(f"📸 Forwarding photo from {user_id} to {partner_id}")
+            print(f"📸 Photo received from {user_id}, preparing to set timer")
+            photo_file_id = message.photo[-1].file_id
             caption = message.caption or ""
-            modified_caption = label + caption
-            forwarded_message = await bot.send_photo(
-                chat_id=partner_id,
-                photo=message.photo[-1].file_id,
-                caption=modified_caption,
-                reply_to_message_id=reply_to_message_id,
-                protect_content=True
-            )
-            channel_message += f"🖼️ Photo sent\n"
-            if message.caption:
-                channel_message += f"📝 Caption: {message.caption}\n"
+            original_message_id = message.message_id
+            reply_to_message_id = None
+            if message.reply_to_message:
+                original_reply_id = message.reply_to_message.message_id
+                reply_to_message_id = message_id_map.get(user_id, {}).get(original_reply_id)
+            pending_photos[user_id] = {
+                'file_id': photo_file_id,
+                'caption': caption,
+                'original_message_id': original_message_id,
+                'reply_to_message_id': reply_to_message_id
+            }
+            timer_options = [
+                [InlineKeyboardButton(text="View Once", callback_data="timer_view_once")],
+                [InlineKeyboardButton(text="3 Seconds", callback_data="timer_3")],
+                [InlineKeyboardButton(text="10 Seconds", callback_data="timer_10")],
+                [InlineKeyboardButton(text="30 Seconds", callback_data="timer_30")],
+                [InlineKeyboardButton(text="Do Not Delete", callback_data="timer_none")],
+                [InlineKeyboardButton(text="Custom", callback_data="timer_custom")],
+            ]
+            timer_keyboard = InlineKeyboardMarkup(inline_keyboard=timer_options)
+            await message.answer("⏳ Please select how long the photo should be kept after being opened:", reply_markup=timer_keyboard)
+            return  # Exit to wait for timer selection
         elif message.document:
             print(f"📄 Forwarding document from {user_id} to {partner_id}")
             caption = message.caption or ""
@@ -671,8 +741,6 @@ async def forward_messages(message: Message):
             message_id_map[user_id][message.message_id] = forwarded_message.message_id
             message_id_map[partner_id][forwarded_message.message_id] = message.message_id
             print(f"📌 Mapped message ID {message.message_id} (user {user_id}) to {forwarded_message.message_id} (user {partner_id})")
-        else:
-            print(f"⚠️ Failed to map message ID for {user_id}: No valid forwarded_message")
     except Exception as e:
         print(f"❌ Error forwarding message from {user_id} to {partner_id}: {e}")
         await message.answer("⚠️ Failed to send message. Please try again.")
@@ -683,13 +751,7 @@ async def forward_messages(message: Message):
             text=channel_message,
             parse_mode="Markdown"
         )
-        if message.photo:
-            await bot.send_photo(
-                chat_id=CHANNEL_ID,
-                photo=message.photo[-1].file_id,
-                caption=message.caption or ""
-            )
-        elif message.document:
+        if message.document:
             await bot.send_document(
                 chat_id=CHANNEL_ID,
                 document=message.document.file_id,
@@ -727,6 +789,95 @@ async def forward_messages(message: Message):
     except Exception as e:
         print(f"❌ Error logging message to channel {CHANNEL_ID}: {e}")
 
+# Callback query handlers for timer selection
+@router.callback_query(F.data == "timer_view_once")
+async def handle_timer_view_once(callback: CallbackQuery):
+    user_id = callback.from_user.id
+    if user_id not in pending_photos:
+        await callback.answer("⚠️ No pending photo found.", show_alert=True)
+        return
+    photo_info = pending_photos.pop(user_id)
+    partner_id = active_matches[user_id]
+    await send_photo_to_partner(user_id, partner_id, photo_info, ttl_seconds=1)
+    await callback.answer("✅ Photo sent with 'View Once' timer.")
+
+@router.callback_query(F.data == "timer_3")
+async def handle_timer_3(callback: CallbackQuery):
+    user_id = callback.from_user.id
+    if user_id not in pending_photos:
+        await callback.answer("⚠️ No pending photo found.", show_alert=True)
+        return
+    photo_info = pending_photos.pop(user_id)
+    partner_id = active_matches[user_id]
+    await send_photo_to_partner(user_id, partner_id, photo_info, ttl_seconds=3)
+    await callback.answer("✅ Photo sent with 3 seconds timer.")
+
+@router.callback_query(F.data == "timer_10")
+async def handle_timer_10(callback: CallbackQuery):
+    user_id = callback.from_user.id
+    if user_id not in pending_photos:
+        await callback.answer("⚠️ No pending photo found.", show_alert=True)
+        return
+    photo_info = pending_photos.pop(user_id)
+    partner_id = active_matches[user_id]
+    await send_photo_to_partner(user_id, partner_id, photo_info, ttl_seconds=10)
+    await callback.answer("✅ Photo sent with 10 seconds timer.")
+
+@router.callback_query(F.data == "timer_30")
+async def handle_timer_30(callback: CallbackQuery):
+    user_id = callback.from_user.id
+    if user_id not in pending_photos:
+        await callback.answer("⚠️ No pending photo found.", show_alert=True)
+        return
+    photo_info = pending_photos.pop(user_id)
+    partner_id = active_matches[user_id]
+    await send_photo_to_partner(user_id, partner_id, photo_info, ttl_seconds=30)
+    await callback.answer("✅ Photo sent with 30 seconds timer.")
+
+@router.callback_query(F.data == "timer_none")
+async def handle_timer_none(callback: CallbackQuery):
+    user_id = callback.from_user.id
+    if user_id not in pending_photos:
+        await callback.answer("⚠️ No pending photo found.", show_alert=True)
+        return
+    photo_info = pending_photos.pop(user_id)
+    partner_id = active_matches[user_id]
+    await send_photo_to_partner(user_id, partner_id, photo_info, ttl_seconds=None)
+    await callback.answer("✅ Photo sent without timer.")
+
+@router.callback_query(F.data == "timer_custom")
+async def handle_timer_custom(callback: CallbackQuery):
+    user_id = callback.from_user.id
+    if user_id not in pending_photos:
+        await callback.answer("⚠️ No pending photo found.", show_alert=True)
+        return
+    custom_timer_users.add(user_id)
+    await callback.message.answer("⏳ Please enter the number of seconds for the timer (between 1 and 60):")
+    await callback.answer()
+
+# Handle custom timer input
+@router.message(F.chat.type == "private", F.text, lambda message: message.from_user.id in custom_timer_users)
+async def handle_custom_timer_input(message: Message):
+    user_id = message.from_user.id
+    if user_id not in pending_photos:
+        await message.answer("⚠️ No pending photo found.")
+        if user_id in custom_timer_users:
+            custom_timer_users.remove(user_id)
+        return
+    try:
+        ttl_seconds = int(message.text)
+        if ttl_seconds < 1 or ttl_seconds > 60:
+            await message.answer("⚠️ Please enter a number between 1 and 60 seconds.")
+            return
+        photo_info = pending_photos.pop(user_id)
+        partner_id = active_matches[user_id]
+        await send_photo_to_partner(user_id, partner_id, photo_info, ttl_seconds=ttl_seconds)
+        await message.answer(f"✅ Photo sent with {ttl_seconds} seconds timer.")
+        if user_id in custom_timer_users:
+            custom_timer_users.remove(user_id)
+    except ValueError:
+        await message.answer("⚠️ Please enter a valid integer for the timer seconds.")
+
 # Optional: Explicitly ignore messages in group chats
 @router.message(F.chat.type.in_({"group", "supergroup"}))
 async def ignore_group_messages(_message: Message):
@@ -744,7 +895,7 @@ async def set_bot_commands():
     await bot.set_my_commands(commands, scope=BotCommandScopeAllPrivateChats())
     print("✅ Bot commands set for private chats only")
 
-# Callback query handlers
+# Callback query handlers for setup
 @router.callback_query(F.data == "age")
 async def handle_age(callback: CallbackQuery):
     age_keyboard = InlineKeyboardMarkup(
