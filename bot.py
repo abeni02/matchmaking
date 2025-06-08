@@ -199,7 +199,7 @@ async def start_command(message: Message):
         await send_join_group_message(message)
         return
     current_state = get_user_state(user_id)
-    welcome_text = "👋 Welcome to our matchmaking bot! Discover your perfect match based on your preferences.\n"
+    welcome_text = "👋 Welcome to our matchmaking bot! Discover your perfect match based on your preferences.n\n"
     if current_state == "idle":
         welcome_text += "Press 'Setup' to configure your preferences."
     elif current_state == "searching":
@@ -736,7 +736,6 @@ async def set_bot_commands():
         BotCommand(command="setup", description="Set up your preferences"),
         BotCommand(command="help", description="Get help or assistance"),
         BotCommand(command="end", description="End your session"),
-        BotCommand(command="group", description="View group information and options")
     ]
     await bot.set_my_commands(commands, scope=BotCommandScopeAllPrivateChats())
     print("✅ Bot commands set for private chats only")
