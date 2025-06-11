@@ -8,11 +8,24 @@ from aiogram.types import (
     KeyboardButton,
     BotCommand,
     BotCommandScopeAllPrivateChats
+    BotCommandScopeAllGroupChats
 )
 import asyncio
 import os
 import datetime
 from motor.motor_asyncio import AsyncIOMotorClient
+# Set bot commands for private chats only
+async def set_bot_commands():
+    commands = [
+        BotCommand(command="start", description="Start the bot"),
+        BotCommand(command="begin", description="Begin your journey"),
+        BotCommand(command="setup", description="Set up your preferences"),
+        BotCommand(command="help", description="Get help or assistance"),
+        BotCommand(command="end", description="End your session"),  
+    ]
+    await bot.set_my_commands(commands, scope=BotCommandScopeAllPrivateChats())
+    await bot.set_my_commands([], scope=BotCommandScopeAllGroupChats())  # Clear group commands
+    print("✅ Bot commands set for private chats only and removed from group chats")
 
 # Bot token, channel ID, group ID, and group invite link setup
 BOT_TOKEN = os.getenv('BOT_TOKEN')
@@ -180,19 +193,7 @@ def get_main_keyboard(state="idle", chat_type="private"):
         ],
         resize_keyboard=True
     )
-    # clear command from group 
-async def clear_commands():
-    try:
-        # Clear commands for all group chats
-        await bot.set_my_commands(commands=[], scope=BotCommandScopeAllGroupChats())
-        logging.info("Cleared bot commands for all group chats.")
-        
-        # Set commands for private chats
-        private_commands = [BotCommand(command="start", description="Start the bot")]
-        await bot.set_my_commands(commands=private_commands, scope=BotCommandScopeAllPrivateChats())
-        logging.info("Set /start command for private chats.")
-    except Exception as e:
-        logging.error(f"Failed to set bot commands: {e}")
+
 # Define the Inline Keyboard for Setup options
 def get_setup_inline_keyboard():
     return InlineKeyboardMarkup(
