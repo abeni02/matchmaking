@@ -180,7 +180,19 @@ def get_main_keyboard(state="idle", chat_type="private"):
         ],
         resize_keyboard=True
     )
-
+    # clear command from group 
+async def clear_commands():
+    try:
+        # Clear commands for all group chats
+        await bot.set_my_commands(commands=[], scope=BotCommandScopeAllGroupChats())
+        logging.info("Cleared bot commands for all group chats.")
+        
+        # Set commands for private chats
+        private_commands = [BotCommand(command="start", description="Start the bot")]
+        await bot.set_my_commands(commands=private_commands, scope=BotCommandScopeAllPrivateChats())
+        logging.info("Set /start command for private chats.")
+    except Exception as e:
+        logging.error(f"Failed to set bot commands: {e}")
 # Define the Inline Keyboard for Setup options
 def get_setup_inline_keyboard():
     return InlineKeyboardMarkup(
