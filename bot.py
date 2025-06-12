@@ -155,7 +155,7 @@ async def set_bot_commands():
         BotCommand(command="begin", description="Begin your journey"),
         BotCommand(command="setup", description="Set up your preferences"),
         BotCommand(command="help", description="Get help or assistance"),
-        BotCommand(command="end", description="End your session"),  
+        BotCommand(command="end", description="End your session"),
     ]
     await bot.set_my_commands(commands, scope=BotCommandScopeAllPrivateChats())
     await bot.set_my_commands([], scope=BotCommandScopeAllGroupChats())
@@ -335,6 +335,16 @@ def get_setup_inline_keyboard(user_id):
         ]
     )
 
+# Define translated texts for actions
+action_texts = {
+    "begin": {translations["en"]["begin"], translations["am"]["begin"], "/begin"},
+    "stop_searching": {translations["en"]["stop_searching"], translations["am"]["stop_searching"]},
+    "end_chat": {translations["en"]["end_chat"], translations["am"]["end_chat"], "/end"}
+}
+all_action_texts = set.union(*action_texts.values())
+setup_texts = {translations["en"]["setup_button"], translations["am"]["setup_button"], "/setup"}
+help_texts = {translations["en"]["help_button"], translations["am"]["help_button"], "/help"}
+
 # Define the /start command with membership check
 @router.message(F.chat.type == "private", F.text == "/start")
 async def start_command(message: Message):
@@ -358,7 +368,7 @@ async def start_command(message: Message):
         await show_setup_menu(message)
 
 # Handle "Setup" button or command
-@router.message(F.chat.type == "private", F.text.in_({"⚙️ Setup", "/setup"}))
+@router.message(F.chat.type == "private", F.text.in_(setup_texts))
 async def handle_setup(message: Message):
     await show_setup_menu(message)
 
@@ -497,24 +507,13 @@ def find_match(user_id):
         partner_criteria = candidate_prefs.get("partner", {})
         user_partner_prefs = user_prefs.get("partner", {})
         user_religion = user_prefs.get("religion", "Not set")
-        candidate_religion = candidate_prefs.get("religion", "Not set")
-        partner_religion_pref = partner_criteria.get("religion", "any")
-        user_partner_religion_pref = user_prefs.get("partner", {}).get("religion", "any")
-        candidate_religion_ok = (
-            partner_religion_pref.lower() == "any" or
-            partner_religion_pref == user_religion
-        )
-        user_religion_ok = (
-            user_partner_religion_pref.lower() == "any" or
-            user_partner_religion_pref == candidate_religion
-        )
-        if (
+        candidate_religion = candidate_checked_outcome = (
             (partner_criteria.get("min_age", 0) <= int(user_prefs.get("age", 0)) <= partner_criteria.get("max_age", 100))
             and (user_partner_prefs.get("min_age", 0) <= int(candidate_prefs.get("age", 0)) <= user_partner_prefs.get("max_age", 100))
             and (partner_criteria.get("gender", "any") in ("any", user_prefs.get("gender", "any")))
             and (user_partner_prefs.get("gender", "any") in ("any", candidate_prefs.get("gender", "any")))
-            and candidate_religion_ok
-            and user_religion_ok
+            and (partner_criteria.get("religion", "any").lower() == "any" or partner_criteria.get("religion") == user_religion)
+            and (user_partner_prefs.get("religion", "any").lower() == "any" or user_partner_prefs.get("religion") == candidate_religion)
         ):
             return candidate_id
     return None
@@ -585,12 +584,12 @@ async def attempt_match(user_id):
     return False
 
 # Handle matching buttons and commands with membership check for Begin
-@router.message(F.chat.type == "private", F.text.in_({translations["en"]["begin"], translations["en"]["stop_searching"], translations["en"]["end_chat"], "/begin", "/end"}))
+@router.message(F.chat.type == "private", F.text.in_(all_action_texts))
 async def handle_matching_button(message: Message):
     user_id = message.from_user.id
     text = message.text
     current_state = get_user_state(user_id)
-    if text in [get_translation(user_id, "begin"), "/begin"]:
+    if text in action_texts["begin"]:
         if current_state == "searching":
             await message.answer(
                 text=get_translation(user_id, "already_searching"),
@@ -606,7 +605,7 @@ async def handle_matching_button(message: Message):
                 await send_join_group_message(message)
                 return
             await start_searching(message, user_id)
-    elif text == get_translation(user_id, "stop_searching"):
+    elif text in action_texts["stop_searching"]:
         if current_state != "searching":
             await message.answer(
                 text=get_translation(user_id, "invalid_action"),
@@ -619,7 +618,7 @@ async def handle_matching_button(message: Message):
             text=get_translation(user_id, "stopped_searching"),
             reply_markup=get_main_keyboard(user_id, state="idle")
         )
-    elif text == get_translation(user_id, "end_chat"):
+    elif text in action_texts["end_chat"]:
         if current_state != "chatting":
             await message.answer(
                 text=get_translation(user_id, "invalid_action"),
@@ -643,40 +642,9 @@ async def handle_matching_button(message: Message):
             text=get_translation(match_id, "partner_ended_session"),
             reply_markup=get_main_keyboard(match_id, state="idle")
         )
-    elif text == "/end":
-        if current_state == "chatting":
-            match_id = active_matches.pop(user_id)
-            active_matches.pop(match_id, None)
-            cooldown_period = datetime.timedelta(hours=4)
-            now = datetime.datetime.now()
-            cooldown_tracker.setdefault(user_id, {})[match_id] = now + cooldown_period
-            cooldown_tracker.setdefault(match_id, {})[user_id] = now + cooldown_period
-            message_id_map.pop(user_id, None)
-            message_id_map.pop(match_id, None)
-            await message.answer(
-                text=get_translation(user_id, "session_ended"),
-                reply_markup=get_main_keyboard(user_id, state="idle")
-            )
-            await bot.send_message(
-                chat_id=match_id,
-                text=get_translation(match_id, "partner_ended_session"),
-                reply_markup=get_main_keyboard(match_id, state="idle")
-            )
-        elif current_state == "searching":
-            waiting_users.remove(user_id)
-            waiting_start_times.pop(user_id, None)
-            await message.answer(
-                text=get_translation(user_id, "stopped_searching"),
-                reply_markup=get_main_keyboard(user_id, state="idle")
-            )
-        else:
-            await message.answer(
-                text=get_translation(user_id, "no_active_session"),
-                reply_markup=get_main_keyboard(user_id, state="idle")
-            )
 
 # Handle "Help" button or command
-@router.message(F.chat.type == "private", F.text.in_({"❓ Help", "/help"}))
+@router.message(F.chat.type == "private", F.text.in_(help_texts))
 async def handle_help(message: Message):
     user_id = message.from_user.id
     await message.answer(
