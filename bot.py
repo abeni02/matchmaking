@@ -530,11 +530,20 @@ async def handle_help(message: Message):
 @router.message(F.chat.type == "private", F.text | F.document | F.photo | F.video | F.audio | F.voice | F.video_note | F.sticker)
 async def forward_messages(message: Message):
     user_id = message.from_user.id
-    print(f"📩 Received message from {user_id}, type: {message.content_type}")
+    current_state = get_user_state(user_id)  # Get the user's current state
+    print(f"📩 Received message from {user_id}, type: {message.content_type}, state: {current_state}")
     print(f"📋 Active matches: {active_matches}")
     print(f"🗂️ Current message_id_map: {message_id_map}")
-    if user_id not in active_matches:
-        print(f"⚠️ User {user_id} not in active_matches")
+
+    if current_state == "chatting":
+        partner_id = active_matches[user_id]
+        # ... (rest of the forwarding logic remains unchanged)
+    elif current_state == "searching":
+        await message.answer(
+            "🔍 You are already searching for a partner. Please wait.",
+            reply_markup=get_main_keyboard(state="searching")
+        )
+    else:  # idle state
         await message.answer(
             "⚠️ You are not currently chatting with anyone. Press 'Begin' to find a partner.",
             reply_markup=get_main_keyboard(state="idle")
