@@ -90,7 +90,7 @@ translations = {
         "your_profile": "የእርስዎ መገለጫ",
         "partner_profile": "የአጋር መገለጫ",
         "show_profile": "መገለጫ አሳይ",
-        "language": "ቋ�iformisቋ",
+        "language": "ቋንቋ",
         "begin": "🚀 ጀምር",
         "stop_searching": "⏹️ ፍለጋን አቁም",
         "end_chat": "🔚 ውይይት ጨርስ",
