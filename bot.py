@@ -80,6 +80,7 @@ translations = {
     },
     "am": {
         "set_commands_private": "✅ የቦት ትዕዛዞች ለግል ውይይቶች ብቻ ተዘጋጅተዋል እና ከቡድን ውይይቶች ተወግደዋል",
+        "welcome": "👋 እንኳን ወዓልይ ውይይቶች ብቻ ተዘጋጅተዋል እና ከቡድን ውይይቶች ተወግደዋል",
         "welcome": "👋 እንኳን ወደ እኛ ማችሜኬንግ ቦት በደህና መጡ! በእርስዎ ምርጫዎች መሰረት ፍጹም ተዛማጅዎን ያግኙ።\n",
         "welcome_idle": "የእርስዎን ምርጫዎች ለመዋቀር 'ማዋቀሪያ' የሚለውን ይጫኑ።",
         "welcome_searching": "እርስዎ በአሁኑ ጊዜ አጋር ፍለጋ ላይ ነዎት። ለመሰረዝ 'ፍለጋን አቁም' የሚለውን ይጫኑ።",
@@ -257,7 +258,7 @@ async def is_group_member(user_id: int) -> bool:
         member = await bot.get_chat_member(chat_id=GROUP_ID, user_id=user_id)
         return member.status not in ['left', 'kicked']
     except Exception as e:
-        print(f"Error checking group membership for user {user_id}: {e}")
+        print(f"Error checking group membership for user Sun {user_id}: {e}")
         return False
 
 # Function to send join group message
@@ -659,8 +660,7 @@ async def handle_matching_button(message: Message):
 async def handle_help(message: Message):
     user_id = message.from_user.id
     await message.answer(
-        text=get_translation(user_id, "help_text"),
-        reply_markup=get_main_keyboard(user_id, state=get_user_state(user_id))
+        text=get_translation(user_id, "help_text")
     )
 
 @router.message(F.chat.type == "private", F.text | F.document | F.photo | F.video | F.audio | F.voice | F.video_note | F.sticker)
