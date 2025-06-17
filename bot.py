@@ -300,7 +300,10 @@ async def start_searching(message: Message, user_id: int):
         "🔍 Waiting for a partner. ",
         reply_markup=get_main_keyboard(state="searching")
     )
-    await attempt_match(user_id)
+    while user_id in waiting_users:
+        await attempt_match(user_id)
+        if user_id not in active_matches:
+            await asyncio.sleep(5)  # Wait 5 seconds before retrying
     return True
 
 # Modified to prioritize users waiting longer and handle "Any" religion explicitly
