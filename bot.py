@@ -54,7 +54,6 @@ dp.include_router(router)
 client = AsyncIOMotorClient(MONGODB_URI)
 db = client['bot_database']
 users_collection = db['users']
-state_collection = db['bot_state']  # New collection for runtime state
 
 # Initialize data structures
 user_data = {}
@@ -122,35 +121,6 @@ async def load_user_data():
         print(f"✅ Loaded data for {len(user_data)} users from MongoDB")
     except Exception as e:
         print(f"❌ Error loading user data from MongoDB: {e}")
-        #save state of users
-async def save_bot_state():
-    try:
-        state_data = {
-            '_id': 'bot_state',
-            'active_matches': active_matches,
-            'waiting_users': list(waiting_users),
-            'waiting_start_times': {str(k): v.isoformat() for k, v in waiting_start_times.items()},
-            'cooldown_tracker': {
-                str(user_id): {
-                    str(partner_id): end_time.isoformat()
-                    for partner_id, end_time in partners.items()
-                }
-                for user_id, partners in cooldown_tracker.items()
-            },
-            'message_id_map': {
-                str(user_id): {str(k): v for k, v in messages.items()}
-                for user_id, messages in message_id_map.items()
-            },
-            'last_updated': datetime.datetime.now().isoformat()
-        }
-        await state_collection.replace_one(
-            {'_id': 'bot_state'},
-            state_data,
-            upsert=True
-        )
-        print("✅ Bot runtime state saved to MongoDB")
-    except Exception as e:
-        print(f"❌ Error saving bot state to MongoDB: {e}")
 
 # Helper function to check if a user is a group member
 async def is_group_member(user_id: int) -> bool:
@@ -160,75 +130,6 @@ async def is_group_member(user_id: int) -> bool:
     except Exception as e:
         print(f"Error checking group membership for user {user_id}: {e}")
         return False
-        #load Bot state
-async def load_bot_state():
-    global active_matches, waiting_users, waiting_start_times, cooldown_tracker, message_id_map
-    try:
-        state_doc = await state_collection.find_one({'_id': 'bot_state'})
-        if state_doc:
-            active_matches = state_doc.get('active_matches', {})
-            waiting_users = set(state_doc.get('waiting_users', []))
-            waiting_start_times = {
-                int(k): datetime.datetime.fromisoformat(v)
-                for k, v in state_doc.get('waiting_start_times', {}).items()
-            }
-            cooldown_tracker = {
-                int(user_id): {
-                    int(partner_id): datetime.datetime.fromisoformat(end_time)
-                    for partner_id, end_time in partners.items()
-                }
-                for user_id, partners in state_doc.get('cooldown_tracker', {}).items()
-            }
-            message_id_map = {
-                int(user_id): {int(k): v for k, v in messages.items()}
-                for user_id, messages in state_doc.get('message_id_map', {}).items()
-            }
-            print(f"✅ Loaded bot state from MongoDB: {len(active_matches)} active matches, {len(waiting_users)} waiting users")
-            # Validate and clean up stale data
-            await validate_bot_state()
-        else:
-            print("ℹ️ No bot state found in MongoDB, starting fresh")
-    except Exception as e:
-        print(f"❌ Error loading bot state from MongoDB: {e}")
-        #valid_bot_state
-async def validate_bot_state():
-    now = datetime.datetime.now()
-    # Validate active matches
-    invalid_matches = []
-    for user_id, partner_id in list(active_matches.items()):
-        if not await is_group_member(user_id) or not await is_group_member(partner_id):
-            invalid_matches.append((user_id, partner_id))
-    for user_id, partner_id in invalid_matches:
-        active_matches.pop(user_id, None)
-        active_matches.pop(partner_id, None)
-        message_id_map.pop(user_id, None)
-        message_id_map.pop(partner_id, None)
-        await bot.send_message(user_id, "⚠️ Your previous chat session was terminated due to group membership issues.", reply_markup=get_main_keyboard(state="idle"))
-        await bot.send_message(partner_id, "⚠️ Your previous chat session was terminated due to group membership issues.", reply_markup=get_main_keyboard(state="idle"))
-    # Validate waiting users
-    invalid_waiting = []
-    for user_id in waiting_users:
-        if not await is_group_member(user_id) or user_id in active_matches:
-            invalid_waiting.append(user_id)
-    for user_id in invalid_waiting:
-        waiting_users.discard(user_id)
-        waiting_start_times.pop(user_id, None)
-        await bot.send_message(user_id, "⚠️ Your search was canceled due to group membership or state issues.", reply_markup=get_main_keyboard(state="idle"))
-    # Clean up expired cooldowns
-    for user_id in list(cooldown_tracker):
-        for partner_id in list(cooldown_tracker[user_id]):
-            if cooldown_tracker[user_id][partner_id] < now:
-                cooldown_tracker[user_id].pop(partner_id)
-        if not cooldown_tracker[user_id]:
-            cooldown_tracker.pop(user_id)
-    await save_bot_state()
-    print(f"✅ Validated bot state: Removed {len(invalid_matches)} invalid matches, {len(invalid_waiting)} invalid waiting users")
-    #resume Match
-async def resume_matching():
-    for user_id in list(waiting_users):
-        if await is_group_member(user_id) and user_id not in active_matches:
-            await attempt_match(user_id)
-    print("✅ Resumed matching process for waiting users")
 
 # Function to send join group message
 async def send_join_group_message(message: Message):
@@ -398,7 +299,6 @@ async def start_searching(message: Message, user_id: int):
         return False
     waiting_start_times[user_id] = datetime.datetime.now()
     waiting_users.add(user_id)
-    await save_bot_state()  # Save state after updating waiting_users
     await message.answer(
         "🔍 Waiting for a partner. ",
         reply_markup=get_main_keyboard(state="searching")
@@ -460,7 +360,6 @@ async def attempt_match(user_id):
         waiting_users.discard(match_id)
         waiting_start_times.pop(user_id, None)
         waiting_start_times.pop(match_id, None)
-        await save_bot_state()  # Save state after updating matches
         user_data_1 = user_data[user_id]
         user_data_2 = user_data[match_id]
         user_1_info = await bot.get_chat(user_id)
@@ -559,32 +458,12 @@ async def handle_matching_button(message: Message):
             reply_markup=get_main_keyboard(state="idle")
         )
     elif text == END_CHAT_TEXT:
-    if current_state != "chatting":
-        await message.answer(
-            "⚠️ Invalid action for current state.",
-            reply_markup=get_main_keyboard(state=current_state)
-        )
-        return
-    match_id = active_matches.pop(user_id)
-    active_matches.pop(match_id, None)
-    cooldown_period = datetime.timedelta(hours=4)
-    now = datetime.datetime.now()
-    cooldown_tracker.setdefault(user_id, {})[match_id] = now + cooldown_period
-    cooldown_tracker.setdefault(match_id, {})[user_id] = now + cooldown_period
-    message_id_map.pop(user_id, None)
-    message_id_map.pop(match_id, None)
-    await save_bot_state()  # Save state after ending chat
-    await message.answer(
-        "❌ You have ended the session. You can 'Begin' again to find a new partner.",
-        reply_markup=get_main_keyboard(state="idle")
-    )
-    await bot.send_message(
-        chat_id=match_id,
-        text="❌ Your partner has ended the session. You can 'Begin' again to find a new partner.",
-        reply_markup=get_main_keyboard(state="idle")
-    )
-    elif text == "/end":
-    if current_state == "chatting":
+        if current_state != "chatting":
+            await message.answer(
+                "⚠️ Invalid action for current state.",
+                reply_markup=get_main_keyboard(state=current_state)
+            )
+            return
         match_id = active_matches.pop(user_id)
         active_matches.pop(match_id, None)
         cooldown_period = datetime.timedelta(hours=4)
@@ -593,33 +472,46 @@ async def handle_matching_button(message: Message):
         cooldown_tracker.setdefault(match_id, {})[user_id] = now + cooldown_period
         message_id_map.pop(user_id, None)
         message_id_map.pop(match_id, None)
-        await save_bot_state()  # Save state after ending chat
         await message.answer(
             "❌ You have ended the session. You can 'Begin' again to find a new partner.",
-            reply_to_message_id=message.message_id,
             reply_markup=get_main_keyboard(state="idle")
         )
         await bot.send_message(
             chat_id=match_id,
             text="❌ Your partner has ended the session. You can 'Begin' again to find a new partner.",
-            reply_to_message_id=message.message_id,
-            reply_markup=get_message_keyboard(state="idle")
-        )
-    elif current_state == "searching":
-        waiting_users.remove(user_id)
-        waiting_start_times.pop(user_id)
-        await save_bot_state()  None)  # Save state after stopping searching
-        await message.reply(
-            text="🛑 You have stopped searching.",
-            reply_to_message_id=message.message_id,
             reply_markup=get_main_keyboard(state="idle")
         )
-    else:
-        await message.reply(
-            text="⚠️ You are not in an active session or searching.",
-            reply_to_message_id=message.message_id,
-            reply_markup=get_main_keyboard(state="idle")
-        )
+    elif text == "/end":
+        if current_state == "chatting":
+            match_id = active_matches.pop(user_id)
+            active_matches.pop(match_id, None)
+            cooldown_period = datetime.timedelta(hours=4)
+            now = datetime.datetime.now()
+            cooldown_tracker.setdefault(user_id, {})[match_id] = now + cooldown_period
+            cooldown_tracker.setdefault(match_id, {})[user_id] = now + cooldown_period
+            message_id_map.pop(user_id, None)
+            message_id_map.pop(match_id, None)
+            await message.answer(
+                "❌ You have ended the session. You can 'Begin' again to find a new partner.",
+                reply_markup=get_main_keyboard(state="idle")
+            )
+            await bot.send_message(
+                chat_id=match_id,
+                text="❌ Your partner has ended the session. You can 'Begin' again to find a new partner.",
+                reply_markup=get_main_keyboard(state="idle")
+            )
+        elif current_state == "searching":
+            waiting_users.remove(user_id)
+            waiting_start_times.pop(user_id, None)
+            await message.answer(
+                "🛑 You have stopped searching.",
+                reply_markup=get_main_keyboard(state="idle")
+            )
+        else:
+            await message.answer(
+                "⚠️ You are not in an active session or searching.",
+                reply_markup=get_main_keyboard(state="idle")
+            )
 # Handle "Help" button or command
 @router.message(F.chat.type == "private", F.text.in_({"❓ Help", "/help"}))
 async def handle_help(message: Message):
@@ -1110,13 +1002,10 @@ async def periodic_save():
     while True:
         await asyncio.sleep(60)
         await save_user_data()
-        await save_bot_state()
-        print("🔄 Performed periodic backup of user data and bot state")
+        print("🔄 Performed periodic backup of user data")
 
 async def main():
     await load_user_data()
-    await load_bot_state()  # Load bot state on startup
-    await resume_matching()  # Resume matching for waiting users
     print("🤖 Bot is running...")
     print("💾 Individual data points will be saved immediately upon change")
     print("💾 Automatic backups will occur every minute")
@@ -1127,21 +1016,14 @@ async def main():
             await dp.start_polling(bot)
     except KeyboardInterrupt:
         await save_user_data()
-        await save_bot_state()
         print("💾 Final save completed before shutdown")
-    except Exception as e:
-        print(f"❌ Unexpected error: {e}")
-        await save_user_data()
-        await save_bot_state()
-        print("💾 Emergency save completed before shutdown")
     finally:
         periodic_save_task.cancel()
         try:
             await periodic_save_task
         except asyncio.CancelledError:
             pass
-        await client.close()  # Close MongoDB connection
         print("👋 Bot has shut down gracefully")
+
 if __name__ == "__main__":
     asyncio.run(main())
-
