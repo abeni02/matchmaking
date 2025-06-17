@@ -93,19 +93,16 @@ async def save_user_data():
 # Function to update a single user's data in MongoDB
 async def update_user_data(user_id):
     if user_id in user_data:
-        user_info = user_data[user_id]
         try:
             await users_collection.replace_one(
                 {'_id': user_id},
-                {'_id': user_id, **user_info},
+                {'_id': user_id, **user_data[user_id]},
                 upsert=True
             )
-            print(f"✅ Updated user {user_id} in MongoDB")
         except Exception as e:
-            print(f"❌ Error updating user {user_id} in MongoDB: {e}")
-    else:
-        print(f"⚠️ User {user_id} not found in user_data")
-
+            logging.error(f"Failed to update user {user_id}: {e}")
+            # Optionally notify the user
+            await bot.send_message(user_id, "⚠️ Database issue, please try again later.")
 # Function for immediate (non-awaited) saving of a single user's data
 def update_user_data_now(user_id):
     asyncio.create_task(update_user_data(user_id))
