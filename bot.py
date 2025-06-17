@@ -54,7 +54,6 @@ dp.include_router(router)
 client = AsyncIOMotorClient(MONGODB_URI)
 db = client['bot_database']
 users_collection = db['users']
-state_collection = db['bot_state']
 
 # Initialize data structures
 user_data = {}
@@ -122,80 +121,6 @@ async def load_user_data():
         print(f"✅ Loaded data for {len(user_data)} users from MongoDB")
     except Exception as e:
         print(f"❌ Error loading user data from MongoDB: {e}")
-        #state to be saved 
-async def save_bot_state():
-    try:
-        # Save active_matches
-        await state_collection.replace_one(
-            {'_id': 'active_matches'},
-            {'_id': 'active_matches', 'data': active_matches},
-            upsert=True
-        )
-        # Save cooldown_tracker
-        await state_collection.replace_one(
-            {'_id': 'cooldown_tracker'},
-            {'_id': 'cooldown_tracker', 'data': cooldown_tracker},
-            upsert=True
-        )
-        # Save waiting_users as list
-        await state_collection.replace_one(
-            {'_id': 'waiting_users'},
-            {'_id': 'waiting_users', 'data': list(waiting_users)},
-            upsert=True
-        )
-        # Save waiting_start_times
-        await state_collection.replace_one(
-            {'_id': 'waiting_start_times'},
-            {'_id': 'waiting_start_times', 'data': waiting_start_times},
-            upsert=True
-        )
-        # Save message_id_map
-        await state_collection.replace_one(
-            {'_id': 'message_id_map'},
-            {'_id': 'message_id_map', 'data': message_id_map},
-            upsert=True
-        )
-        print("✅ Bot state saved to MongoDB")
-    except Exception as e:
-        print(f"❌ Error saving bot state to MongoDB: {e}")
-
-async def load_bot_state():
-    global active_matches, cooldown_tracker, waiting_users, waiting_start_times, message_id_map
-    try:
-        # Load active_matches
-        doc = await state_collection.find_one({'_id': 'active_matches'})
-        if doc:
-            active_matches = doc['data']
-        else:
-            active_matches = {}
-        # Load cooldown_tracker
-        doc = await state_collection.find_one({'_id': 'cooldown_tracker'})
-        if doc:
-            cooldown_tracker = doc['data']
-        else:
-            cooldown_tracker = {}
-        # Load waiting_users
-        doc = await state_collection.find_one({'_id': 'waiting_users'})
-        if doc:
-            waiting_users = set(doc['data'])
-        else:
-            waiting_users = set()
-        # Load waiting_start_times
-        doc = await state_collection.find_one({'_id': 'waiting_start_times'})
-        if doc:
-            waiting_start_times = doc['data']
-        else:
-            waiting_start_times = {}
-        # Load message_id_map
-        doc = await state_collection.find_one({'_id': 'message_id_map'})
-        if doc:
-            message_id_map = doc['data']
-        else:
-            message_id_map = {}
-        print("✅ Bot state loaded from MongoDB")
-    except Exception as e:
-        print(f"❌ Error loading bot state from MongoDB: {e}")
-
 
 # Helper function to check if a user is a group member
 async def is_group_member(user_id: int) -> bool:
@@ -1077,12 +1002,10 @@ async def periodic_save():
     while True:
         await asyncio.sleep(60)
         await save_user_data()
-        await save_bot_state()
-        print("🔄 Performed periodic backup of user data and bot state")
+        print("🔄 Performed periodic backup of user data")
 
 async def main():
     await load_user_data()
-    await load_bot_state()
     print("🤖 Bot is running...")
     print("💾 Individual data points will be saved immediately upon change")
     print("💾 Automatic backups will occur every minute")
@@ -1092,9 +1015,8 @@ async def main():
         async with bot:
             await dp.start_polling(bot)
     except KeyboardInterrupt:
-    await save_user_data()
-    await save_bot_state()
-    print("💾 Final save of user data and bot state completed before shutdown")
+        await save_user_data()
+        print("💾 Final save completed before shutdown")
     finally:
         periodic_save_task.cancel()
         try:
