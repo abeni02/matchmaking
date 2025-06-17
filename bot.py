@@ -62,6 +62,7 @@ cooldown_tracker = {}
 waiting_users = set()
 waiting_start_times = {}
 message_id_map = {}
+match_lock = asyncio.Lock()
 
 # Button texts
 BEGIN_TEXT = "🚀 Begin"
@@ -352,74 +353,75 @@ def find_match(user_id):
     return None
 
 async def attempt_match(user_id):
-    match_id = find_match(user_id)
-    if match_id:
-        active_matches[user_id] = match_id
-        active_matches[match_id] = user_id
-        waiting_users.discard(user_id)
-        waiting_users.discard(match_id)
-        waiting_start_times.pop(user_id, None)
-        waiting_start_times.pop(match_id, None)
-        user_data_1 = user_data[user_id]
-        user_data_2 = user_data[match_id]
-        user_1_info = await bot.get_chat(user_id)
-        user_2_info = await bot.get_chat(match_id)
-        user_1_name = user_1_info.first_name or user_1_info.username or f"User {user_id}"
-        user_2_name = user_2_info.first_name or user_2_info.username or f"User {match_id}"
-        await bot.send_message(
-            chat_id=user_id,
-            text=(
-                f"🎉 Match found!\n\n"
-                f"👤 Partner’s setup:\n"
-                f"📅 Age: {user_data_2.get('age', 'Not set')}\n"
-                f"🚻 Gender: {user_data_2.get('gender', 'Not set')}\n"
-                f"🙏 Religion: {user_data_2.get('religion', 'Not set')}\n"
-                "You can Start messaging."
-            ),
-            reply_markup=get_main_keyboard(state="chatting"),
-        )
-        await bot.send_message(
-            chat_id=match_id,
-            text=(
-                f"🎉 Match found!\n\n"
-                f"👤 Partner’s setup:\n"
-                f"📅 Age: {user_data_1.get('age', 'Not set')}\n"
-                f"🚻 Gender: {user_data_1.get('gender', 'Not set')}\n"
-                f"🙏 Religion: {user_data_1.get('religion', 'Not set')}\n"
-                "You Can Start messaging ."
-            ),
-            reply_markup=get_main_keyboard(state="chatting"),
-        )
-        match_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        channel_message = (
-            f"🤝 **New Match** at {match_time}\n\n"
-            f"👤 User 1: {user_1_name} (ID: {user_id})\n"
-            f"  - Age: {user_data_1.get('age', 'Not set')}\n"
-            f"  - Gender: {user_data_1.get('gender', 'Not set')}\n"
-            f"  - Religion: {user_data_1.get('religion', 'Not set')}\n"
-            f"  - Partner Prefs:\n"
-            f"    - Age Range: {user_data_1.get('partner', {}).get('min_age', 'Not set')} to {user_data_1.get('partner', {}).get('max_age', 'Not set')}\n"
-            f"    - Gender: {user_data_1.get('partner', {}).get('gender', 'Not set')}\n"
-            f"    - Religion: {user_data_1.get('partner', {}).get('religion', 'Not set')}\n\n"
-            f"👤 User 2: {user_2_name} (ID: {match_id})\n"
-            f"  - Age: {user_data_2.get('age', 'Not set')}\n"
-            f"  - Gender: {user_data_2.get('gender', 'Not set')}\n"
-            f"  - Religion: {user_data_2.get('religion', 'Not set')}\n"
-            f"  - Partner Prefs:\n"
-            f"    - Age Range: {user_data_2.get('partner', {}).get('min_age', 'Not set')} to {user_data_2.get('partner', {}).get('max_age', 'Not set')}\n"
-            f"    - Gender: {user_data_2.get('partner', {}).get('gender', 'Not set')}\n"
-            f"    - Religion: {user_data_2.get('partner', {}).get('religion', 'Not set')}"
-        )
-        try:
+    async with match_lock:
+        match_id = find_match(user_id)
+        if match_id:
+            active_matches[user_id] = match_id
+            active_matches[match_id] = user_id
+            waiting_users.discard(user_id)
+            waiting_users.discard(match_id)
+            waiting_start_times.pop(user_id, None)
+            waiting_start_times.pop(match_id, None)
+            user_data_1 = user_data[user_id]
+            user_data_2 = user_data[match_id]
+            user_1_info = await bot.get_chat(user_id)
+            user_2_info = await bot.get_chat(match_id)
+            user_1_name = user_1_info.first_name or user_1_info.username or f"User {user_id}"
+            user_2_name = user_2_info.first_name or user_2_info.username or f"User {match_id}"
             await bot.send_message(
-                chat_id=CHANNEL_ID,
-                text=channel_message,
-                parse_mode="Markdown"
+                chat_id=user_id,
+                text=(
+                    f"🎉 Match found!\n\n"
+                    f"👤 Partner’s setup:\n"
+                    f"📅 Age: {user_data_2.get('age', 'Not set')}\n"
+                    f"🚻 Gender: {user_data_2.get('gender', 'Not set')}\n"
+                    f"🙏 Religion: {user_data_2.get('religion', 'Not set')}\n"
+                    "You can Start messaging."
+                ),
+                reply_markup=get_main_keyboard(state="chatting"),
             )
-            print(f"📢 Match logged to channel {CHANNEL_ID} for users {user_id} and {match_id}")
-        except Exception as e:
-            print(f"❌ Error logging match to channel {CHANNEL_ID}: {e}")
-        return True
+            await bot.send_message(
+                chat_id=match_id,
+                text=(
+                    f"🎉 Match found!\n\n"
+                    f"👤 Partner’s setup:\n"
+                    f"📅 Age: {user_data_1.get('age', 'Not set')}\n"
+                    f"🚻 Gender: {user_data_1.get('gender', 'Not set')}\n"
+                    f"🙏 Religion: {user_data_1.get('religion', 'Not set')}\n"
+                    "You Can Start messaging ."
+                ),
+                reply_markup=get_main_keyboard(state="chatting"),
+            )
+            match_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            channel_message = (
+                f"🤝 **New Match** at {match_time}\n\n"
+                f"👤 User 1: {user_1_name} (ID: {user_id})\n"
+                f"  - Age: {user_data_1.get('age', 'Not set')}\n"
+                f"  - Gender: {user_data_1.get('gender', 'Not set')}\n"
+                f"  - Religion: {user_data_1.get('religion', 'Not set')}\n"
+                f"  - Partner Prefs:\n"
+                f"    - Age Range: {user_data_1.get('partner', {}).get('min_age', 'Not set')} to {user_data_1.get('partner', {}).get('max_age', 'Not set')}\n"
+                f"    - Gender: {user_data_1.get('partner', {}).get('gender', 'Not set')}\n"
+                f"    - Religion: {user_data_1.get('partner', {}).get('religion', 'Not set')}\n\n"
+                f"👤 User 2: {user_2_name} (ID: {match_id})\n"
+                f"  - Age: {user_data_2.get('age', 'Not set')}\n"
+                f"  - Gender: {user_data_2.get('gender', 'Not set')}\n"
+                f"  - Religion: {user_data_2.get('religion', 'Not set')}\n"
+                f"  - Partner Prefs:\n"
+                f"    - Age Range: {user_data_2.get('partner', {}).get('min_age', 'Not set')} to {user_data_2.get('partner', {}).get('max_age', 'Not set')}\n"
+                f"    - Gender: {user_data_2.get('partner', {}).get('gender', 'Not set')}\n"
+                f"    - Religion: {user_data_2.get('partner', {}).get('religion', 'Not set')}"
+            )
+            try:
+                await bot.send_message(
+                    chat_id=CHANNEL_ID,
+                    text=channel_message,
+                    parse_mode="Markdown"
+                )
+                print(f"📢 Match logged to channel {CHANNEL_ID} for users {user_id} and {match_id}")
+            except Exception as e:
+                print(f"❌ Error logging match to channel {CHANNEL_ID}: {e}")
+            return True
     return False
 
 # Handle matching buttons and commands with membership check for Begin
