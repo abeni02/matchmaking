@@ -985,7 +985,7 @@ async def handle_show_setup(callback: CallbackQuery):
 
 async def periodic_save():
     while True:
-        await asyncio.sleep(60)
+        await asyncio.sleep(300)
         await save_user_data()
         print("🔄 Performed periodic backup of user data")
 
