@@ -754,18 +754,6 @@ async def forward_messages(message: Message):
 async def ignore_group_messages(_message: Message):
     pass
 
-# Set bot commands for private chats only
-async def set_bot_commands():
-    commands = [
-        BotCommand(command="start", description="Start the bot"),
-        BotCommand(command="begin", description="Begin your journey"),
-        BotCommand(command="setup", description="Set up your preferences"),
-        BotCommand(command="help", description="Get help or assistance"),
-        BotCommand(command="end", description="End your session"),
-    ]
-    await bot.set_my_commands(commands, scope=BotCommandScopeAllPrivateChats())
-    print("✅ Bot commands set for private chats only")
-
 # Callback query handlers
 @router.callback_query(F.data == "age")
 async def handle_age(callback: CallbackQuery):
