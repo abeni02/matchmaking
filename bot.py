@@ -30,7 +30,7 @@ async def set_bot_commands():
         BotCommand(command="begin", description="Begin your journey"),
         BotCommand(command="setup", description="Set up your preferences"),
         BotCommand(command="help", description="Get help or assistance"),
-        BotCommand(command="end", description="End your session"),  
+        BotCommand(command="end", description="End your session"),
     ]
     await bot.set_my_commands(commands, scope=BotCommandScopeAllPrivateChats())
     await bot.set_my_commands([], scope=BotCommandScopeAllGroupChats())  # Clear group commands
@@ -152,7 +152,7 @@ async def send_join_group_message(message: Message):
         reply_markup=join_keyboard
     )
 
-# Helper function to check if setup is complete (NOW ASYNCHRONOUS)
+# Helper function to check if setup is complete
 async def is_setup_complete(user_id):
     async with user_data_lock:
         if user_id not in user_data:
@@ -178,15 +178,16 @@ async def is_setup_complete(user_id):
                 missing_fields.append("Partner Religion")
         return len(missing_fields) == 0, missing_fields
 
-# Helper function to get user state
-def get_user_state(user_id):
-    with active_matches_lock, waiting_users_lock:
-        if user_id in active_matches:
-            return "chatting"
-        elif user_id in waiting_users:
-            return "searching"
-        else:
-            return "idle"
+# Helper function to get user state (now asynchronous)
+async def get_user_state(user_id):
+    async with active_matches_lock:
+        async with waiting_users_lock:
+            if user_id in active_matches:
+                return "chatting"
+            elif user_id in waiting_users:
+                return "searching"
+            else:
+                return "idle"
 
 # Define the Reply Keyboard with dynamic state-based buttons
 def get_main_keyboard(state="idle", chat_type="private"):
@@ -225,7 +226,7 @@ async def start_command(message: Message):
     if not await is_group_member(user_id):
         await send_join_group_message(message)
         return
-    current_state = get_user_state(user_id)
+    current_state = await get_user_state(user_id)
     welcome_text = "👋 Welcome to our matchmaking bot! Discover your perfect match based on your preferences. \n"
     if current_state == "idle":
         welcome_text += "Press 'Setup' to configure your preferences."
@@ -311,9 +312,10 @@ async def start_searching(message: Message, user_id: int):
         )
         await show_setup_menu(message)
         return False
-    async with waiting_start_times_lock, waiting_users_lock:
-        waiting_start_times[user_id] = datetime.datetime.now()
-        waiting_users.add(user_id)
+    async with waiting_start_times_lock:
+        async with waiting_users_lock:
+            waiting_start_times[user_id] = datetime.datetime.now()
+            waiting_users.add(user_id)
     await message.answer(
         "🔍 Waiting for a partner. ",
         reply_markup=get_main_keyboard(state="searching")
@@ -321,62 +323,68 @@ async def start_searching(message: Message, user_id: int):
     await attempt_match(user_id)
     return True
 
-# Modified to prioritize users waiting longer and handle "Any" religion explicitly
-def find_match(user_id):
-    async with user_data_lock, active_matches_lock, waiting_users_lock, waiting_start_times_lock, cooldown_tracker_lock:
-        if user_id not in user_data:
-            return None
-        now = datetime.datetime.now()
-        user_prefs = user_data[user_id]
-        sorted_waiting_users = sorted(
-            waiting_users,
-            key=lambda x: waiting_start_times.get(x, now)
-        )
-        for candidate_id in sorted_waiting_users:
-            if candidate_id == user_id or candidate_id in active_matches:
-                continue
-            candidate_prefs = user_data.get(candidate_id, {})
-            if not candidate_prefs:
-                continue
-            if user_id in cooldown_tracker and candidate_id in cooldown_tracker[user_id]:
-                cooldown_end = cooldown_tracker[user_id][candidate_id]
-                if now < cooldown_end:
-                    continue
-            partner_criteria = candidate_prefs.get("partner", {})
-            user_partner_prefs = user_prefs.get("partner", {})
-            user_religion = user_prefs.get("religion", "Not set")
-            candidate_religion = candidate_prefs.get("religion", "Not set")
-            partner_religion_pref = partner_criteria.get("religion", "any")
-            user_partner_religion_pref = user_prefs.get("partner", {}).get("religion", "any")
-            candidate_religion_ok = (
-                partner_religion_pref.lower() == "any" or
-                partner_religion_pref == user_religion
-            )
-            user_religion_ok = (
-                user_partner_religion_pref.lower() == "any" or
-                user_partner_religion_pref == candidate_religion
-            )
-            if (
-                (partner_criteria.get("min_age", 0) <= int(user_prefs.get("age", 0)) <= partner_criteria.get("max_age", 100))
-                and (user_partner_prefs.get("min_age", 0) <= int(candidate_prefs.get("age", 0)) <= user_partner_prefs.get("max_age", 100))
-                and (partner_criteria.get("gender", "any") in ("any", user_prefs.get("gender", "any")))
-                and (user_partner_prefs.get("gender", "any") in ("any", candidate_prefs.get("gender", "any")))
-                and candidate_religion_ok
-                and user_religion_ok
-            ):
-                return candidate_id
-        return None
+# Modified to prioritize users waiting longer and handle "Any" religion explicitly (now asynchronous)
+async def find_match(user_id):
+    async with user_data_lock:
+        async with active_matches_lock:
+            async with waiting_users_lock:
+                async with waiting_start_times_lock:
+                    async with cooldown_tracker_lock:
+                        if user_id not in user_data:
+                            return None
+                        now = datetime.datetime.now()
+                        user_prefs = user_data[user_id]
+                        sorted_waiting_users = sorted(
+                            waiting_users,
+                            key=lambda x: waiting_start_times.get(x, now)
+                        )
+                        for candidate_id in sorted_waiting_users:
+                            if candidate_id == user_id or candidate_id in active_matches:
+                                continue
+                            candidate_prefs = user_data.get(candidate_id, {})
+                            if not candidate_prefs:
+                                continue
+                            if user_id in cooldown_tracker and candidate_id in cooldown_tracker[user_id]:
+                                cooldown_end = cooldown_tracker[user_id][candidate_id]
+                                if now < cooldown_end:
+                                    continue
+                            partner_criteria = candidate_prefs.get("partner", {})
+                            user_partner_prefs = user_prefs.get("partner", {})
+                            user_religion = user_prefs.get("religion", "Not set")
+                            candidate_religion = candidate_prefs.get("religion", "Not set")
+                            partner_religion_pref = partner_criteria.get("religion", "any")
+                            user_partner_religion_pref = user_prefs.get("partner", {}).get("religion", "any")
+                            candidate_religion_ok = (
+                                partner_religion_pref.lower() == "any" or
+                                partner_religion_pref == user_religion
+                            )
+                            user_religion_ok = (
+                                user_partner_religion_pref.lower() == "any" or
+                                user_partner_religion_pref == candidate_religion
+                            )
+                            if (
+                                (partner_criteria.get("min_age", 0) <= int(user_prefs.get("age", 0)) <= partner_criteria.get("max_age", 100))
+                                and (user_partner_prefs.get("min_age", 0) <= int(candidate_prefs.get("age", 0)) <= user_partner_prefs.get("max_age", 100))
+                                and (partner_criteria.get("gender", "any") in ("any", user_prefs.get("gender", "any")))
+                                and (user_partner_prefs.get("gender", "any") in ("any", candidate_prefs.get("gender", "any")))
+                                and candidate_religion_ok
+                                and user_religion_ok
+                            ):
+                                return candidate_id
+                        return None
 
 async def attempt_match(user_id):
-    match_id = find_match(user_id)
+    match_id = await find_match(user_id)
     if match_id:
-        async with active_matches_lock, waiting_users_lock, waiting_start_times_lock:
-            active_matches[user_id] = match_id
-            active_matches[match_id] = user_id
-            waiting_users.discard(user_id)
-            waiting_users.discard(match_id)
-            waiting_start_times.pop(user_id, None)
-            waiting_start_times.pop(match_id, None)
+        async with active_matches_lock:
+            async with waiting_users_lock:
+                async with waiting_start_times_lock:
+                    active_matches[user_id] = match_id
+                    active_matches[match_id] = user_id
+                    waiting_users.discard(user_id)
+                    waiting_users.discard(match_id)
+                    waiting_start_times.pop(user_id, None)
+                    waiting_start_times.pop(match_id, None)
         async with user_data_lock:
             user_data_1 = user_data[user_id]
             user_data_2 = user_data[match_id]
@@ -417,7 +425,7 @@ async def attempt_match(user_id):
             f"  - Religion: {user_data_1.get('religion', 'Not set')}\n"
             f"  - Partner Prefs:\n"
             f"    - Age Range: {user_data_1.get('partner', {}).get('min_age', 'Not set')} to {user_data_1.get('partner', {}).get('max_age', 'Not set')}\n"
-            f"    - Gender: {user_data_1.get('partner', {}).get('gender', 'Not set')}\n"
+            f"    - Gender: {user_data_1.get('partner', {}). psychoanalysis("Not set")}\n"
             f"    - Religion: {user_data_1.get('partner', {}).get('religion', 'Not set')}\n\n"
             f"👤 User 2: {user_2_name} (ID: {match_id})\n"
             f"  - Age: {user_data_2.get('age', 'Not set')}\n"
@@ -445,7 +453,7 @@ async def attempt_match(user_id):
 async def handle_matching_button(message: Message):
     user_id = message.from_user.id
     text = message.text
-    current_state = get_user_state(user_id)
+    current_state = await get_user_state(user_id)
     if text in [BEGIN_TEXT, "/begin"]:
         if current_state == "searching":
             await message.answer(
@@ -469,9 +477,10 @@ async def handle_matching_button(message: Message):
                 reply_markup=get_main_keyboard(state=current_state)
             )
             return
-        async with waiting_users_lock, waiting_start_times_lock:
-            waiting_users.remove(user_id)
-            waiting_start_times.pop(user_id, None)
+        async with waiting_users_lock:
+            async with waiting_start_times_lock:
+                waiting_users.remove(user_id)
+                waiting_start_times.pop(user_id, None)
         await message.answer(
             "🛑 You have stopped searching.",
             reply_markup=get_main_keyboard(state="idle")
@@ -483,15 +492,17 @@ async def handle_matching_button(message: Message):
                 reply_markup=get_main_keyboard(state=current_state)
             )
             return
-        async with active_matches_lock, cooldown_tracker_lock, message_id_map_lock:
-            match_id = active_matches.pop(user_id)
-            active_matches.pop(match_id, None)
-            cooldown_period = datetime.timedelta(hours=4)
-            now = datetime.datetime.now()
-            cooldown_tracker.setdefault(user_id, {})[match_id] = now + cooldown_period
-            cooldown_tracker.setdefault(match_id, {})[user_id] = now + cooldown_period
-            message_id_map.pop(user_id, None)
-            message_id_map.pop(match_id, None)
+        async with active_matches_lock:
+            async with cooldown_tracker_lock:
+                async with message_id_map_lock:
+                    match_id = active_matches.pop(user_id)
+                    active_matches.pop(match_id, None)
+                    cooldown_period = datetime.timedelta(hours=4)
+                    now = datetime.datetime.now()
+                    cooldown_tracker.setdefault(user_id, {})[match_id] = now + cooldown_period
+                    cooldown_tracker.setdefault(match_id, {})[user_id] = now + cooldown_period
+                    message_id_map.pop(user_id, None)
+                    message_id_map.pop(match_id, None)
         await message.answer(
             "❌ You have ended the session. You can 'Begin' again to find a new partner.",
             reply_markup=get_main_keyboard(state="idle")
@@ -502,37 +513,41 @@ async def handle_matching_button(message: Message):
             reply_markup=get_main_keyboard(state="idle")
         )
     elif text == "/end":
-        async with active_matches_lock, waiting_users_lock, waiting_start_times_lock, cooldown_tracker_lock, message_id_map_lock:
-            if current_state == "chatting":
-                match_id = active_matches.pop(user_id)
-                active_matches.pop(match_id, None)
-                cooldown_period = datetime.timedelta(hours=4)
-                now = datetime.datetime.now()
-                cooldown_tracker.setdefault(user_id, {})[match_id] = now + cooldown_period
-                cooldown_tracker.setdefault(match_id, {})[user_id] = now + cooldown_period
-                message_id_map.pop(user_id, None)
-                message_id_map.pop(match_id, None)
-                await message.answer(
-                    "❌ You have ended the session. You can 'Begin' again to find a new partner.",
-                    reply_markup=get_main_keyboard(state="idle")
-                )
-                await bot.send_message(
-                    chat_id=match_id,
-                    text="❌ Your partner has ended the session. You can 'Begin' again to find a new partner.",
-                    reply_markup=get_main_keyboard(state="idle")
-                )
-            elif current_state == "searching":
-                waiting_users.remove(user_id)
-                waiting_start_times.pop(user_id, None)
-                await message.answer(
-                    "🛑 You have stopped searching.",
-                    reply_markup=get_main_keyboard(state="idle")
-                )
-            else:
-                await message.answer(
-                    "⚠️ You are not in an active session or searching.",
-                    reply_markup=get_main_keyboard(state="idle")
-                )
+        async with active_matches_lock:
+            async with waiting_users_lock:
+                async with waiting_start_times_lock:
+                    async with cooldown_tracker_lock:
+                        async with message_id_map_lock:
+                            if current_state == "chatting":
+                                match_id = active_matches.pop(user_id)
+                                active_matches.pop(match_id, None)
+                                cooldown_period = datetime.timedelta(hours=4)
+                                now = datetime.datetime.now()
+                                cooldown_tracker.setdefault(user_id, {})[match_id] = now + cooldown_period
+                                cooldown_tracker.setdefault(match_id, {})[user_id] = now + cooldown_period
+                                message_id_map.pop(user_id, None)
+                                message_id_map.pop(match_id, None)
+                                await message.answer(
+                                    "❌ You have ended the session. You can 'Begin' again to find a new partner.",
+                                    reply_markup=get_main_keyboard(state="idle")
+                                )
+                                await bot.send_message(
+                                    chat_id=match_id,
+                                    text="❌ Your partner has ended the session. You can 'Begin' again to find a new partner.",
+                                    reply_markup=get_main_keyboard(state="idle")
+                                )
+                            elif current_state == "searching":
+                                waiting_users.remove(user_id)
+                                waiting_start_times.pop(user_id, None)
+                                await message.answer(
+                                    "🛑 You have stopped searching.",
+                                    reply_markup=get_main_keyboard(state="idle")
+                                )
+                            else:
+                                await message.answer(
+                                    "⚠️ You are not in an active session or searching.",
+                                    reply_markup=get_main_keyboard(state="idle")
+                                )
 
 # Handle "Help" button or command
 @router.message(F.chat.type == "private", F.text.in_({"❓ Help", "/help"}))
@@ -552,7 +567,7 @@ async def handle_help(message: Message):
 @router.message(F.chat.type == "private", F.text | F.document | F.photo | F.video | F.audio | F.voice | F.video_note | F.sticker)
 async def forward_messages(message: Message):
     user_id = message.from_user.id
-    current_state = get_user_state(user_id)  # Get the user's current state
+    current_state = await get_user_state(user_id)  # Get the user's current state
     print(f"📩 Received message from {user_id}, type: {message.content_type}, state: {current_state}")
     print(f"📋 Active matches: {active_matches}")
     print(f"🗂️ Current message_id_map: {message_id_map}")
@@ -572,204 +587,206 @@ async def forward_messages(message: Message):
             reply_markup=get_main_keyboard(state="idle")
         )
         return
-    async with active_matches_lock, message_id_map_lock, user_data_lock:
-        partner_id = active_matches[user_id]
-        message_id_map.setdefault(user_id, {})
-        message_id_map.setdefault(partner_id, {})
-        sender_gender = user_data.get(user_id, {}).get("gender", "Not set")
-        gender_emoji = get_gender_emoji(sender_gender)
-        label = f"Partner {gender_emoji}: "
-        reply_to_message_id = None
-        reply_info = ""
-        if message.reply_to_message:
-            original_reply_id = message.reply_to_message.message_id
-            print(f"↩️ Detected reply from {user_id} to message {original_reply_id}")
-            reply_to_message_id = message_id_map.get(user_id, {}).get(original_reply_id)
-            if not reply_to_message_id:
-                print(f"⚠️ No mapped message ID found for reply from {user_id} to message {original_reply_id}")
-                reply_info = f" (Reply to message ID {original_reply_id}, mapping not found)"
-            else:
-                print(f"✅ Found mapped reply_to_message_id: {reply_to_message_id} for user {user_id}")
-                reply_info = f" (Reply to message ID {reply_to_message_id})"
-        user_info = await bot.get_chat(user_id)
-        sender_name = user_info.first_name or user_info.username or f"User {user_id}"
-        message_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        channel_message = f"💬 **Message** at {message_time}\n👤 From: {sender_name} (ID: {user_id}) to User ID: {partner_id}{reply_info}\n"
-        try:
-            forwarded_message = None
-            if message.text:
-                print(f"📝 Forwarding text message from {user_id} to {partner_id}")
-                modified_text = label + message.text
-                forwarded_message = await bot.send_message(
-                    chat_id=partner_id,
-                    text=modified_text,
-                    reply_to_message_id=reply_to_message_id,
-                    protect_content=True
-                )
-                channel_message += f"📜 Text: {message.text}\n"
-            elif message.photo:
-                print(f"📸 Forwarding photo from {user_id} to {partner_id}")
-                caption = message.caption or ""
-                modified_caption = label + caption
-                forwarded_message = await bot.send_photo(
-                    chat_id=partner_id,
-                    photo=message.photo[-1].file_id,
-                    caption=modified_caption,
-                    reply_to_message_id=reply_to_message_id,
-                    protect_content=True
-                )
-                channel_message += f"🖼️ Photo sent\n"
-                if message.caption:
-                    channel_message += f"📝 Caption: {message.caption}\n"
-            elif message.document:
-                print(f"📄 Forwarding document from {user_id} to {partner_id}")
-                caption = message.caption or ""
-                modified_caption = label + caption
-                forwarded_message = await bot.send_document(
-                    chat_id=partner_id,
-                    document=message.document.file_id,
-                    caption=modified_caption,
-                    reply_to_message_id=reply_to_message_id,
-                    protect_content=True
-                )
-                channel_message += f"📎 Document: {message.document.file_name or 'Unnamed document'}\n"
-            elif message.video:
-                print(f"🎥 Forwarding video from {user_id} to {partner_id}")
-                caption = message.caption or ""
-                modified_caption = label + caption
-                forwarded_message = await bot.send_video(
-                    chat_id=partner_id,
-                    video=message.video.file_id,
-                    caption=modified_caption,
-                    reply_to_message_id=reply_to_message_id,
-                    protect_content=True
-                )
-                channel_message += f"🎥 Video sent\n"
-                if message.caption:
-                    channel_message += f"📝 Caption: {message.caption}\n"
-            elif message.audio:
-                print(f"🎵 Forwarding audio from {user_id} to {partner_id}")
-                caption = message.caption or ""
-                modified_caption = label + caption
-                forwarded_message = await bot.send_audio(
-                    chat_id=partner_id,
-                    audio=message.audio.file_id,
-                    caption=modified_caption,
-                    reply_to_message_id=reply_to_message_id,
-                    protect_content=True
-                )
-                channel_message += f"🎵 Audio sent\n"
-                if message.caption:
-                    channel_message += f"📝 Caption: {message.caption}\n"
-            elif message.voice:
-                print(f"🎙️ Forwarding voice message from {user_id} to {partner_id}")
-                caption = message.caption or ""
-                modified_caption = label + caption
-                forwarded_message = await bot.send_voice(
-                    chat_id=partner_id,
-                    voice=message.voice.file_id,
-                    caption=modified_caption,
-                    reply_to_message_id=reply_to_message_id,
-                    protect_content=True
-                )
-                channel_message += f"🎙️ Voice message sent\n"
-                if message.caption:
-                    channel_message += f"📝 Caption: {message.caption}\n"
-            elif message.video_note:
-                print(f"🎥 Forwarding video note from {user_id} to {partner_id}")
-                label_text = f"Partner {gender_emoji}:"
-                await bot.send_message(
-                    chat_id=partner_id,
-                    text=label_text,
-                    reply_to_message_id=reply_to_message_id,
-                    protect_content=True
-                )
-                forwarded_message = await bot.send_video_note(
-                    chat_id=partner_id,
-                    video_note=message.video_note.file_id,
-                    reply_to_message_id=reply_to_message_id,
-                    protect_content=True
-                )
-                message_id_map[user_id][message.message_id] = forwarded_message.message_id
-                message_id_map[partner_id][forwarded_message.message_id] = message.message_id
-                print(f"📌 Mapped message ID {message.message_id} (user {user_id}) to {forwarded_message.message_id} (user {partner_id}) for video note")
-                channel_message += f"📜 Label: {label_text}\n🎥 Video note sent\n"
-            elif message.sticker:
-                print(f"🏷️ Forwarding sticker from {user_id} to {partner_id}")
-                caption = message.caption or ""
-                modified_caption = label + caption
-                forwarded_message = await bot.send_sticker(
-                    chat_id=partner_id,
-                    sticker=message.sticker.file_id,
-                    caption=modified_caption,
-                    reply_to_message_id=reply_to_message_id,
-                    protect_content=True
-                )
-                message_id_map[user_id][message.message_id] = forwarded_message.message_id
-                message_id_map[partner_id][forwarded_message.message_id] = message.message_id
-                print(f"📌 Mapped message ID {message.message_id} (user {user_id}) to {forwarded_message.message_id} (user {partner_id}) for sticker")
-                channel_message += f"🏷️ Sticker sent\n"
-                if caption:
-                    channel_message += f"📝 Caption: {caption}\n"
-            if forwarded_message and hasattr(forwarded_message, 'message_id'):
-                message_id_map[user_id][message.message_id] = forwarded_message.message_id
-                message_id_map[partner_id][forwarded_message.message_id] = message.message_id
-                print(f"📌 Mapped message ID {message.message_id} (user {user_id}) to {forwarded_message.message_id} (user {partner_id})")
-            else:
-                print(f"⚠️ Failed to map message ID for {user_id}: No valid forwarded_message")
-        except Exception as e:
-            print(f"❌ Error forwarding message from {user_id} to {partner_id}: {e}")
-            await message.answer("⚠️ Failed to send message. Please try again.")
+    async with active_matches_lock:
+        async with message_id_map_lock:
+            async with user_data_lock:
+                partner_id = active_matches[user_id]
+                message_id_map.setdefault(user_id, {})
+                message_id_map.setdefault(partner_id, {})
+                sender_gender = user_data.get(user_id, {}).get("gender", "Not set")
+                gender_emoji = get_gender_emoji(sender_gender)
+                label = f"Partner {gender_emoji}: "
+                reply_to_message_id = None
+                reply_info = ""
+                if message.reply_to_message:
+                    original_reply_id = message.reply_to_message.message_id
+                    print(f"↩️ Detected reply from {user_id} to message {original_reply_id}")
+                    reply_to_message_id = message_id_map.get(user_id, {}).get(original_reply_id)
+                    if not reply_to_message_id:
+                        print(f"⚠️ No mapped message ID found for reply from {user_id} to message {original_reply_id}")
+                        reply_info = f" (Reply to message ID {original_reply_id}, mapping not found)"
+                    else:
+                        print(f"✅ Found mapped reply_to_message_id: {reply_to_message_id} for user {user_id}")
+                        reply_info = f" (Reply to message ID {reply_to_message_id})"
+                user_info = await bot.get_chat(user_id)
+                sender_name = user_info.first_name or user_info.username or f"User {user_id}"
+                message_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                channel_message = f"💬 **Message** at {message_time}\n👤 From: {sender_name} (ID: {user_id}) to User ID: {partner_id}{reply_info}\n"
+                try:
+                    forwarded_message = None
+                    if message.text:
+                        print(f"📝 Forwarding text message from {user_id} to {partner_id}")
+                        modified_text = label + message.text
+                        forwarded_message = await bot.send_message(
+                            chat_id=partner_id,
+                            text=modified_text,
+                            reply_to_message_id=reply_to_message_id,
+                            protect_content=True
+                        )
+                        channel_message += f"📜 Text: {message.text}\n"
+                    elif message.photo:
+                        print(f"📸 Forwarding photo from {user_id} to {partner_id}")
+                        caption = message.caption or ""
+                        modified_caption = label + caption
+                        forwarded_message = await bot.send_photo(
+                            chat_id=partner_id,
+                            photo=message.photo[-1].file_id,
+                            caption=modified_caption,
+                            reply_to_message_id=reply_to_message_id,
+                            protect_content=True
+                        )
+                        channel_message += f"🖼️ Photo sent\n"
+                        if message.caption:
+                            channel_message += f"📝 Caption: {message.caption}\n"
+                    elif message.document:
+                        print(f"📄 Forwarding document from {user_id} to {partner_id}")
+                        caption = message.caption or ""
+                        modified_caption = label + caption
+                        forwarded_message = await bot.send_document(
+                            chat_id=partner_id,
+                            document=message.document.file_id,
+                            caption=modified_caption,
+                            reply_to_message_id=reply_to_message_id,
+                            protect_content=True
+                        )
+                        channel_message += f"📎 Document: {message.document.file_name or 'Unnamed document'}\n"
+                    elif message.video:
+                        print(f"🎥 Forwarding video from {user_id} to {partner_id}")
+                        caption = message.caption or ""
+                        modified_caption = label + caption
+                        forwarded_message = await bot.send_video(
+                            chat_id=partner_id,
+                            video=message.video.file_id,
+                            caption=modified_caption,
+                            reply_to_message_id=reply_to_message_id,
+                            protect_content=True
+                        )
+                        channel_message += f"🎥 Video sent\n"
+                        if message.caption:
+                            channel_message += f"📝 Caption: {message.caption}\n"
+                    elif message.audio:
+                        print(f"🎵 Forwarding audio from {user_id} to {partner_id}")
+                        caption = message.caption or ""
+                        modified_caption = label + caption
+                        forwarded_message = await bot.send_audio(
+                            chat_id=partner_id,
+                            audio=message.audio.file_id,
+                            caption=modified_caption,
+                            reply_to_message_id=reply_to_message_id,
+                            protect_content=True
+                        )
+                        channel_message += f"🎵 Audio sent\n"
+                        if message.caption:
+                            channel_message += f"📝 Caption: {message.caption}\n"
+                    elif message.voice:
+                        print(f"🎙️ Forwarding voice message from {user_id} to {partner_id}")
+                        caption = message.caption or ""
+                        modified_caption = label + caption
+                        forwarded_message = await bot.send_voice(
+                            chat_id=partner_id,
+                            voice=message.voice.file_id,
+                            caption=modified_caption,
+                            reply_to_message_id=reply_to_message_id,
+                            protect_content=True
+                        )
+                        channel_message += f"🎙️ Voice message sent\n"
+                        if message.caption:
+                            channel_message += f"📝 Caption: {message.caption}\n"
+                    elif message.video_note:
+                        print(f"🎥 Forwarding video note from {user_id} to {partner_id}")
+                        label_text = f"Partner {gender_emoji}:"
+                        await bot.send_message(
+                            chat_id=partner_id,
+                            text=label_text,
+                            reply_to_message_id=reply_to_message_id,
+                            protect_content=True
+                        )
+                        forwarded_message = await bot.send_video_note(
+                            chat_id=partner_id,
+                            video_note=message.video_note.file_id,
+                            reply_to_message_id=reply_to_message_id,
+                            protect_content=True
+                        )
+                        message_id_map[user_id][message.message_id] = forwarded_message.message_id
+                        message_id_map[partner_id][forwarded_message.message_id] = message.message_id
+                        print(f"📌 Mapped message ID {message.message_id} (user {user_id}) to {forwarded_message.message_id} (user {partner_id}) for video note")
+                        channel_message += f"📜 Label: {label_text}\n🎥 Video note sent\n"
+                    elif message.sticker:
+                        print(f"🏷️ Forwarding sticker from {user_id} to {partner_id}")
+                        caption = message.caption or ""
+                        modified_caption = label + caption
+                        forwarded_message = await bot.send_sticker(
+                            chat_id=partner_id,
+                            sticker=message.sticker.file_id,
+                            caption=modified_caption,
+                            reply_to_message_id=reply_to_message_id,
+                            protect_content=True
+                        )
+                        message_id_map[user_id][message.message_id] = forwarded_message.message_id
+                        message_id_map[partner_id][forwarded_message.message_id] = message.message_id
+                        print(f"📌 Mapped message ID {message.message_id} (user {user_id}) to {forwarded_message.message_id} (user {partner_id}) for sticker")
+                        channel_message += f"🏷️ Sticker sent\n"
+                        if caption:
+                            channel_message += f"📝 Caption: {caption}\n"
+                    if forwarded_message and hasattr(forwarded_message, 'message_id'):
+                        message_id_map[user_id][message.message_id] = forwarded_message.message_id
+                        message_id_map[partner_id][forwarded_message.message_id] = message.message_id
+                        print(f"📌 Mapped message ID {message.message_id} (user {user_id}) to {forwarded_message.message_id} (user {partner_id})")
+                    else:
+                        print(f"⚠️ Failed to map message ID for {user_id}: No valid forwarded_message")
+                except Exception as e:
+                    print(f"❌ Error forwarding message from {user_id} to {partner_id}: {e}")
+                    await message.answer("⚠️ Failed to send message. Please try again.")
 
-        try:
-            await bot.send_message(
-                chat_id=CHANNEL_ID,
-                text=channel_message,
-                parse_mode="Markdown"
-            )
-            if message.photo:
-                await bot.send_photo(
-                    chat_id=CHANNEL_ID,
-                    photo=message.photo[-1].file_id,
-                    caption=message.caption or ""
-                )
-            elif message.document:
-                await bot.send_document(
-                    chat_id=CHANNEL_ID,
-                    document=message.document.file_id,
-                    caption=message.caption or ""
-                )
-            elif message.video:
-                await bot.send_video(
-                    chat_id=CHANNEL_ID,
-                    video=message.video.file_id,
-                    caption=message.caption or ""
-                )
-            elif message.audio:
-                await bot.send_audio(
-                    chat_id=CHANNEL_ID,
-                    audio=message.audio.file_id,
-                    caption=message.caption or ""
-                )
-            elif message.voice:
-                await bot.send_voice(
-                    chat_id=CHANNEL_ID,
-                    voice=message.voice.file_id,
-                    caption=message.caption or ""
-                )
-            elif message.video_note:
-                await bot.send_video_note(
-                    chat_id=CHANNEL_ID,
-                    video_note=message.video_note.file_id
-                )
-            elif message.sticker:
-                await bot.send_sticker(
-                    chat_id=CHANNEL_ID,
-                    sticker=message.sticker.file_id
-                )
-            print(f"📢 Message logged to channel {CHANNEL_ID} from user {user_id} to {partner_id}")
-        except Exception as e:
-            print(f"❌ Error logging message to channel {CHANNEL_ID}: {e}")
+                try:
+                    await bot.send_message(
+                        chat_id=CHANNEL_ID,
+                        text=channel_message,
+                        parse_mode="Markdown"
+                    )
+                    if message.photo:
+                        await bot.send_photo(
+                            chat_id=CHANNEL_ID,
+                            photo=message.photo[-1].file_id,
+                            caption=message.caption or ""
+                        )
+                    elif message.document:
+                        await bot.send_document(
+                            chat_id=CHANNEL_ID,
+                            document=message.document.file_id,
+                            caption=message.caption or ""
+                        )
+                    elif message.video:
+                        await bot.send_video(
+                            chat_id=CHANNEL_ID,
+                            video=message.video.file_id,
+                            caption=message.caption or ""
+                        )
+                    elif message.audio:
+                        await bot.send_audio(
+                            chat_id=CHANNEL_ID,
+                            audio=message.audio.file_id,
+                            caption=message.caption or ""
+                        )
+                    elif message.voice:
+                        await bot.send_voice(
+                            chat_id=CHANNEL_ID,
+                            voice=message.voice.file_id,
+                            caption=message.caption or ""
+                        )
+                    elif message.video_note:
+                        await bot.send_video_note(
+                            chat_id=CHANNEL_ID,
+                            video_note=message.video_note.file_id
+                        )
+                    elif message.sticker:
+                        await bot.send_sticker(
+                            chat_id=CHANNEL_ID,
+                            sticker=message.sticker.file_id
+                        )
+                    print(f"📢 Message logged to channel {CHANNEL_ID} from user {user_id} to {partner_id}")
+                except Exception as e:
+                    print(f"❌ Error logging message to channel {CHANNEL_ID}: {e}")
 
 # Optional: Explicitly ignore messages in group chats
 @router.message(F.chat.type.in_({"group", "supergroup"}))
@@ -905,7 +922,7 @@ async def handle_partner_maximum_age(callback: CallbackQuery):
     await callback.answer()
 
 @router.callback_query(F.data.startswith("partner_max_age_"))
-async def handle_partner_age_range(callback: CallbackQuery):
+async def handle_partner_age_range(CallbackQuery):
     user_id = callback.from_user.id
     max_age = int(callback.data.split("_")[-1])
     async with user_data_lock:
