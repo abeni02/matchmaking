@@ -425,7 +425,7 @@ async def attempt_match(user_id):
             f"  - Religion: {user_data_1.get('religion', 'Not set')}\n"
             f"  - Partner Prefs:\n"
             f"    - Age Range: {user_data_1.get('partner', {}).get('min_age', 'Not set')} to {user_data_1.get('partner', {}).get('max_age', 'Not set')}\n"
-            f"    - Gender: {user_data_1.get('partner', {}). psychoanalysis("Not set")}\n"
+            f"    - Gender: {user_data_1.get('partner', {}).get('gender', 'Not set')}\n"
             f"    - Religion: {user_data_1.get('partner', {}).get('religion', 'Not set')}\n\n"
             f"👤 User 2: {user_2_name} (ID: {match_id})\n"
             f"  - Age: {user_data_2.get('age', 'Not set')}\n"
@@ -922,7 +922,7 @@ async def handle_partner_maximum_age(callback: CallbackQuery):
     await callback.answer()
 
 @router.callback_query(F.data.startswith("partner_max_age_"))
-async def handle_partner_age_range(CallbackQuery):
+async def handle_partner_age_range(callback: CallbackQuery):
     user_id = callback.from_user.id
     max_age = int(callback.data.split("_")[-1])
     async with user_data_lock:
