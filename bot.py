@@ -696,24 +696,22 @@ async def forward_messages(message: Message):
                 channel_message += f"📜 Label: {label_text}\n🎥 Video note sent\n"
             elif message.sticker:
                 print(f"🏷️ Forwarding sticker from {user_id} to {partner_id}")
-                label_text = f"Partner {gender_emoji}:"
-                await bot.send_message(
-                    chat_id=partner_id,
-                    text=label_text,
-                    reply_to_message_id=reply_to_message_id,
-                    protect_content=True
-                )
+                caption = message.caption or ""
+                modified_caption = label + caption
                 forwarded_message = await bot.send_sticker(
                     chat_id=partner_id,
                     sticker=message.sticker.file_id,
+                    caption=modified_caption,
                     reply_to_message_id=reply_to_message_id,
                     protect_content=True
                 )
                 message_id_map[user_id][message.message_id] = forwarded_message.message_id
                 message_id_map[partner_id][forwarded_message.message_id] = message.message_id
                 print(f"📌 Mapped message ID {message.message_id} (user {user_id}) to {forwarded_message.message_id} (user {partner_id}) for sticker")
-                channel_message += f"📜 Label: {label_text}\n🏷️ Sticker sent\n"
-            if forwarded_message and hasattr(forwarded_message, 'message_id') and message.content_type not in ('video_note', 'sticker'):
+                channel_message += f"🏷️ Sticker sent\n"
+                if caption:
+                    channel_message += f"📝 Caption: {caption}\n"
+            if forwarded_message and hasattr(forwarded_message, 'message_id'):
                 message_id_map[user_id][message.message_id] = forwarded_message.message_id
                 message_id_map[partner_id][forwarded_message.message_id] = message.message_id
                 print(f"📌 Mapped message ID {message.message_id} (user {user_id}) to {forwarded_message.message_id} (user {partner_id})")
