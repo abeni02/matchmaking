@@ -152,8 +152,8 @@ async def send_join_group_message(message: Message):
         reply_markup=join_keyboard
     )
 
-# Helper function to check if setup is complete
-def is_setup_complete(user_id):
+# Helper function to check if setup is complete (NOW ASYNCHRONOUS)
+async def is_setup_complete(user_id):
     async with user_data_lock:
         if user_id not in user_data:
             return False, ["Age", "Gender", "Religion", "Partner Minimum Age", "Partner Maximum Age", "Partner Gender", "Partner Religion"]
@@ -303,7 +303,7 @@ async def handle_back_to_setup(callback: CallbackQuery):
 
 # Function to start searching with setup check
 async def start_searching(message: Message, user_id: int):
-    is_complete, missing_fields = is_setup_complete(user_id)
+    is_complete, missing_fields = await is_setup_complete(user_id)
     if not is_complete:
         await message.answer(
             text=f"⚠️ Please complete your setup before starting a match. Missing fields:\n- {', '.join(missing_fields)}\nRedirecting to setup menu...",
@@ -825,7 +825,7 @@ async def handle_age_selection(callback: CallbackQuery):
     update_user_data_now(user_id)
     await callback.answer(text=f"Your age is {selected_age}", show_alert=True)
     async with waiting_users_lock:
-        if user_id in waiting_users and is_setup_complete(user_id)[0]:
+        if user_id in waiting_users and (await is_setup_complete(user_id))[0]:
             await attempt_match(user_id)
     await handle_gender(callback)
 
@@ -840,7 +840,7 @@ async def handle_gender_selection(callback: CallbackQuery):
     update_user_data_now(user_id)
     await callback.answer(text=f"You selected {selected_gender}", show_alert=True)
     async with waiting_users_lock:
-        if user_id in waiting_users and is_setup_complete(user_id)[0]:
+        if user_id in waiting_users and (await is_setup_complete(user_id))[0]:
             await attempt_match(user_id)
     await handle_religion(callback)
 
@@ -867,7 +867,7 @@ async def handle_religion_selection(callback: CallbackQuery):
         )
     )
     async with waiting_users_lock:
-        if user_id in waiting_users and is_setup_complete(user_id)[0]:
+        if user_id in waiting_users and (await is_setup_complete(user_id))[0]:
             await attempt_match(user_id)
     await asyncio.sleep(5)
     await handle_back_to_setup(callback)
@@ -892,7 +892,7 @@ async def handle_partner_maximum_age(callback: CallbackQuery):
         user_data.setdefault(user_id, {}).setdefault("partner", {})["min_age"] = min_age
     update_user_data_now(user_id)
     async with waiting_users_lock:
-        if user_id in waiting_users and is_setup_complete(user_id)[0]:
+        if user_id in waiting_users and (await is_setup_complete(user_id))[0]:
             await attempt_match(user_id)
     max_age_keyboard = InlineKeyboardMarkup(
         inline_keyboard=[
@@ -917,7 +917,7 @@ async def handle_partner_age_range(callback: CallbackQuery):
     update_user_data_now(user_id)
     await callback.answer(text=f"🎉 Partner age range set: From {min_age} to {max_age}", show_alert=True)
     async with waiting_users_lock:
-        if user_id in waiting_users and is_setup_complete(user_id)[0]:
+        if user_id in waiting_users and (await is_setup_complete(user_id))[0]:
             await attempt_match(user_id)
     await handle_partner_gender(callback)
 
@@ -946,7 +946,7 @@ async def handle_partner_gender_selection(callback: CallbackQuery):
     update_user_data_now(user_id)
     await callback.answer(text=f"🎉 Partner's Gender set to: {selected_gender.capitalize()}", show_alert=True)
     async with waiting_users_lock:
-        if user_id in waiting_users and is_setup_complete(user_id)[0]:
+        if user_id in waiting_users and (await is_setup_complete(user_id))[0]:
             await attempt_match(user_id)
     await handle_partner_religion(callback)
 
@@ -990,7 +990,7 @@ async def handle_partner_religion_selection(callback: CallbackQuery):
         )
     )
     async with waiting_users_lock:
-        if user_id in waiting_users and is_setup_complete(user_id)[0]:
+        if user_id in waiting_users and (await is_setup_complete(user_id))[0]:
             await attempt_match(user_id)
     await asyncio.sleep(5)
     await handle_back_to_setup(callback)
