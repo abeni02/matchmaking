@@ -292,7 +292,7 @@ async def update_user_data(user_id: int):
         user_info = user_data[user_id].copy()
         user_info["match_partner"] = active_matches.get(user_id)
         user_info["waiting_since"] = waiting_start_times.get(user_id) if user_id in waiting_users else None
-        state = await get_user_state(user_id)  # Updated to await
+        state = await get_user_state(user_id)
         try:
             await mongo_circuit_breaker.execute(
                 users_collection.replace_one,
@@ -431,7 +431,7 @@ async def start_command(message: Message):
     if not await is_group_member(user_id):
         await send_join_group_message(message)
         return
-    current_state = await get_user_state(user_id)  # Updated to await
+    current_state = await get_user_state(user_id)
     welcome_text = "👋 Welcome to our matching bot! Find your perfect match based on your preferences.\n"
     if current_state == "idle":
         welcome_text += "Press 'Setup' to configure your preferences."
@@ -678,7 +678,7 @@ async def attempt_match(user_id: int) -> bool:
 async def handle_matching_button(message: Message):
     user_id = message.from_user.id
     text = message.text
-    current_state = await get_user_state(user_id)  # Updated to await
+    current_state = await get_user_state(user_id)
     async with global_state_lock:
         if text in [BEGIN_TEXT, "/begin"]:
             if current_state == "searching":
@@ -767,7 +767,7 @@ async def handle_help(message: Message):
 # Forward messages with retry and partner check
 async def forward_messages(message: Message):
     user_id = message.from_user.id
-    current_state = await get_user_state(user_id)  # Updated to await
+    current_state = await get_user_state(user_id)
     logger.info(f"Received message from {user_id}, type: {message.content_type}, state: {current_state}")
     if current_state != "chatting":
         await message.answer(
@@ -902,8 +902,7 @@ async def forward_messages(message: Message):
                 )
                 forwarded_message = await bot.send_sticker(
                     chat_id=partner_id,
-                    stic
-ker=message.sticker.file_id,
+                    sticker=message.sticker.file_id,
                     reply_to_message_id=reply_to_message_id,
                     protect_content=True
                 )
