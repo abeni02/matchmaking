@@ -39,15 +39,11 @@ async def set_bot_commands():
     print("✅ Bot commands set for private chats only and removed from group chats")
 
 # Bot token, channel ID, group ID, and group invite link setup
-BOT_TOKEN = {{ secret.BOT_TOKEN }}
-
-CHANNEL_ID = {{ secret.CHANNEL_ID }}
-
-GROUP_ID = {{ secret.GROUP_ID }}
-
-GROUP_INVITE_LINK = {{ secret.GROUP_INVITE_LINK }}
-
-MONGODB_URI = {{ secret.MONGODB_URI }}
+BOT_TOKEN = os.getenv('BOT_TOKEN')
+CHANNEL_ID = os.getenv('CHANNEL_ID')
+GROUP_ID = os.getenv('GROUP_ID')
+GROUP_INVITE_LINK = os.getenv('GROUP_INVITE_LINK')
+MONGODB_URI = os.getenv('MONGODB_URI')
 
 if not BOT_TOKEN:
     raise ValueError("No BOT_TOKEN found in environment variables. Please set it securely.")
