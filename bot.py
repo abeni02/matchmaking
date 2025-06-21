@@ -1307,32 +1307,43 @@ async def cleanup_inactive_users():
 
 # Main function
 async def main():
-    await setup_mongodb_indexes()
-    await load_user_data()
-    logger.info("Bot is running...")
-    await set_bot_commands(bot)
-    periodic_save_task = asyncio.create_task(periodic_save())
-    periodic_match_task = asyncio.create_task(periodic_match_check())
-    waiting_timeout_task = asyncio.create_task(check_waiting_timeouts())
-    cleanup_task = asyncio.create_task(cleanup_inactive_users())
+    # Ensure MongoDB indexes are set up
     try:
+        await setup_mongodb_indexes()
+        await load_user_data()
+        logger.info("Bot is running...")
+        await set_bot_commands(bot)
+        
+        # Start background tasks
+        periodic_save_task = asyncio.create_task(periodic_save())
+        periodic_match_task = asyncio.create_task(periodic_match_check())
+        waiting_timeout_task = asyncio.create_task(check_waiting_timeouts())
+        cleanup_task = asyncio.create_task(cleanup_inactive_users())
+
+        # Start polling with explicit context manager
         async with bot:
-            await dp.start_polling(bot)
+            await dp.start_polling(bot, close_bot_session=True)
     except KeyboardInterrupt:
+        logger.info("Received shutdown signal, saving data...")
         await save_user_data()
-        logger.info("Final save completed before shutdown")
+    except Exception as e:
+        logger.error(f"Unexpected error in main: {e}")
+        await save_user_data()
     finally:
-        periodic_save_task.cancel()
-        periodic_match_task.cancel()
-        waiting_timeout_task.cancel()
-        cleanup_task.cancel()
-        try:
-            await periodic_save_task
-            await periodic_match_task
-            await waiting_timeout_task
-            await cleanup_task
-        except asyncio.CancelledError:
-            pass
+        # Cancel background tasks
+        for task in [periodic_save_task, periodic_match_task, waiting_timeout_task, cleanup_task]:
+            task.cancel()
+        # Wait for tasks to complete cancellation
+        await asyncio.gather(
+            periodic_save_task,
+            periodic_match_task,
+            waiting_timeout_task,
+            cleanup_task,
+            return_exceptions=True
+        )
+        # Close MongoDB client
+        client.close()
+        logger.info("MongoDB client closed")
         logger.info("Bot has been gracefully shut down")
 
 if __name__ == "__main__":
