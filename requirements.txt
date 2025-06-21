@@ -7,3 +7,5 @@ aiohttp==3.9.5
 flask==3.0.3
 requests==2.31.0
 python-telegram-bot==13.7
+tenacity==9.0.0
+pymongo==4.10.1
