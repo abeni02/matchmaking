@@ -16,8 +16,8 @@ import datetime
 from motor.motor_asyncio import AsyncIOMotorClient
 
 # Constants for limits
-MAX_ACTIVE_USERS = 400
-MAX_CONCURRENT_MATCHES = 200
+MAX_ACTIVE_USERS = 600
+MAX_CONCURRENT_MATCHES = 300
 
 # Locks for synchronization
 user_data_lock = asyncio.Lock()
