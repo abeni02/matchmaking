@@ -89,7 +89,6 @@ def get_gender_emoji(gender):
         return "❓"
 
 # Function to save all user data to MongoDB with retries
-# Modified save_user_data to include match and queue state
 async def save_user_data():
     async with user_data_lock:
         users_to_save = {uid: data.copy() for uid, data in user_data.items()}
@@ -120,7 +119,7 @@ async def save_user_data():
                     print(f"❌ Failed to save user {user_id} after 3 attempts")
     print(f"✅ All user data saved to MongoDB")
 
-# Modified load_user_data to rebuild active_matches and waiting_users
+# Function to load user data from MongoDB and rebuild states
 async def load_user_data():
     global user_data, active_matches, waiting_users, waiting_start_times
     user_data = {}
@@ -132,7 +131,6 @@ async def load_user_data():
             try:
                 user_id = document['_id']
                 user_data[user_id] = {k: v for k, v in document.items() if k != '_id'}
-                # Rebuild active_matches
                 match_partner = document.get("match_partner")
                 if match_partner and match_partner in user_data:
                     if user_data[match_partner].get("match_partner") == user_id:
@@ -141,14 +139,12 @@ async def load_user_data():
                     else:
                         print(f"⚠️ Inconsistent match for {user_id}: partner {match_partner} does not match back")
                         user_data[user_id]["match_partner"] = None
-                # Rebuild waiting_users
                 waiting_since = document.get("waiting_since")
                 if waiting_since:
                     waiting_users.add(user_id)
                     waiting_start_times[user_id] = waiting_since
             except Exception as e:
                 print(f"❌ Error loading user {document.get('_id', 'unknown')}: {e}")
-        # Clean up any orphaned matches
         async with active_matches_lock:
             for user_id in list(active_matches.keys()):
                 if active_matches.get(active_matches[user_id]) != user_id:
@@ -161,10 +157,20 @@ async def load_user_data():
     except Exception as e:
         print(f"❌ Error connecting to MongoDB: {e}")
 
-# Function to update a single user's data in MongoDB with retries
+# Function to update a single user's data in MongoDB, including state
 async def update_user_data(user_id):
     if user_id in user_data:
-        user_info = user_data[user_id]
+        user_info = user_data[user_id].copy()
+        async with active_matches_lock:
+            if user_id in active_matches:
+                user_info["match_partner"] = active_matches[user_id]
+            else:
+                user_info["match_partner"] = None
+        async with waiting_users_lock:
+            if user_id in waiting_users:
+                user_info["waiting_since"] = waiting_start_times.get(user_id)
+            else:
+                user_info["waiting_since"] = None
         for attempt in range(3):
             try:
                 await users_collection.replace_one(
@@ -186,21 +192,6 @@ async def update_user_data(user_id):
 # Function for immediate (non-awaited) saving of a single user's data
 def update_user_data_now(user_id):
     asyncio.create_task(update_user_data(user_id))
-
-# Function to load user data from MongoDB
-async def load_user_data():
-    global user_data
-    user_data = {}
-    try:
-        async for document in users_collection.find():
-            try:
-                user_id = document['_id']
-                user_data[user_id] = {k: v for k, v in document.items() if k != '_id'}
-            except Exception as e:
-                print(f"❌ Error loading user {document.get('_id', 'unknown')}: {e}")
-        print(f"✅ Loaded data for {len(user_data)} users from MongoDB")
-    except Exception as e:
-        print(f"❌ Error connecting to MongoDB: {e}")
 
 # Helper function to check if a user is a group member
 async def is_group_member(user_id: int) -> bool:
@@ -380,7 +371,7 @@ async def can_attempt_match():
         active_match_count = len(active_matches) // 2
         return active_users < MAX_ACTIVE_USERS and active_match_count < MAX_CONCURRENT_MATCHES
 
-# Modified start_searching with limit checks and improved feedback
+# Modified start_searching with immediate state update
 async def start_searching(message: Message, user_id: int):
     async with user_data_lock:
         is_complete, missing_fields = is_setup_complete(user_id)
@@ -397,12 +388,13 @@ async def start_searching(message: Message, user_id: int):
         active_users = len(waiting_users) + len(active_matches)
         if active_users >= MAX_ACTIVE_USERS:
             await message.answer(
-                "⚠️ The bot has reached the maximum number of active users (400). Please try again later.",
+                "⚠️ The bot has reached the maximum number of active users (600). Please try again later.",
                 reply_markup=get_main_keyboard(state="idle")
             )
             return False
         waiting_start_times[user_id] = datetime.datetime.now()
         waiting_users.add(user_id)
+    update_user_data_now(user_id)  # Save waiting state immediately
 
     await message.answer(
         "🔍 Waiting for a partner. You will be matched when a suitable partner is found.",
@@ -413,11 +405,11 @@ async def start_searching(message: Message, user_id: int):
         await attempt_match(user_id)
     else:
         await message.answer(
-            "⏳ The current number of active matches has reached the maximum (200). You will be matched when a slot becomes available."
+            "⏳ The current number of active matches has reached the maximum (300). You will be matched when a slot becomes available."
         )
     return True
 
-# Modified attempt_match with limit checks and synchronization
+# Modified attempt_match with immediate state update
 async def attempt_match(user_id):
     now = datetime.datetime.now()
     async with waiting_users_lock:
@@ -505,6 +497,10 @@ async def attempt_match(user_id):
                     print(f"📢 Match logged to channel {CHANNEL_ID} for users {user_id} and {match_id}")
                 except Exception as e:
                     print(f"❌ Error logging match to channel {CHANNEL_ID}: {e}")
+                
+                # Save match state immediately
+                update_user_data_now(user_id)
+                update_user_data_now(match_id)
                 return True
     return False
 
@@ -561,7 +557,7 @@ def find_match(user_id, candidates, user_prefs, candidate_prefs, user_cooldowns,
         return candidate_id
     return None
 
-# Handle matching buttons and commands with membership check for Begin
+# Handle matching buttons and commands with immediate state updates
 @router.message(F.chat.type == "private", F.text.in_({BEGIN_TEXT, STOP_SEARCHING_TEXT, END_CHAT_TEXT, "/begin", "/end"}))
 async def handle_matching_button(message: Message):
     user_id = message.from_user.id
@@ -594,6 +590,7 @@ async def handle_matching_button(message: Message):
             if user_id in waiting_users:
                 waiting_users.remove(user_id)
                 waiting_start_times.pop(user_id, None)
+        update_user_data_now(user_id)  # Save state immediately
         await message.answer(
             "🛑 You have stopped searching.",
             reply_markup=get_main_keyboard(state="idle")
@@ -615,6 +612,8 @@ async def handle_matching_button(message: Message):
                 cooldown_tracker.setdefault(match_id, {})[user_id] = now + cooldown_period
                 message_id_map.pop(user_id, None)
                 message_id_map.pop(match_id, None)
+        update_user_data_now(user_id)  # Save state immediately
+        update_user_data_now(match_id)  # Save state immediately
         await message.answer(
             "❌ You have ended the session. You can press 'Begin' again to find a new partner.",
             reply_markup=get_main_keyboard(state="idle")
