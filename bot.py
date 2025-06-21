@@ -89,9 +89,20 @@ def get_gender_emoji(gender):
         return "❓"
 
 # Function to save all user data to MongoDB with retries
+# Modified save_user_data to include match and queue state
 async def save_user_data():
     async with user_data_lock:
         users_to_save = {uid: data.copy() for uid, data in user_data.items()}
+    async with active_matches_lock, waiting_users_lock:
+        for user_id in users_to_save:
+            if user_id in active_matches:
+                users_to_save[user_id]["match_partner"] = active_matches[user_id]
+            else:
+                users_to_save[user_id]["match_partner"] = None
+            if user_id in waiting_users:
+                users_to_save[user_id]["waiting_since"] = waiting_start_times.get(user_id)
+            else:
+                users_to_save[user_id]["waiting_since"] = None
     for user_id, data in users_to_save.items():
         for attempt in range(3):
             try:
@@ -108,6 +119,47 @@ async def save_user_data():
                 else:
                     print(f"❌ Failed to save user {user_id} after 3 attempts")
     print(f"✅ All user data saved to MongoDB")
+
+# Modified load_user_data to rebuild active_matches and waiting_users
+async def load_user_data():
+    global user_data, active_matches, waiting_users, waiting_start_times
+    user_data = {}
+    active_matches = {}
+    waiting_users = set()
+    waiting_start_times = {}
+    try:
+        async for document in users_collection.find():
+            try:
+                user_id = document['_id']
+                user_data[user_id] = {k: v for k, v in document.items() if k != '_id'}
+                # Rebuild active_matches
+                match_partner = document.get("match_partner")
+                if match_partner and match_partner in user_data:
+                    if user_data[match_partner].get("match_partner") == user_id:
+                        active_matches[user_id] = match_partner
+                        active_matches[match_partner] = user_id
+                    else:
+                        print(f"⚠️ Inconsistent match for {user_id}: partner {match_partner} does not match back")
+                        user_data[user_id]["match_partner"] = None
+                # Rebuild waiting_users
+                waiting_since = document.get("waiting_since")
+                if waiting_since:
+                    waiting_users.add(user_id)
+                    waiting_start_times[user_id] = waiting_since
+            except Exception as e:
+                print(f"❌ Error loading user {document.get('_id', 'unknown')}: {e}")
+        # Clean up any orphaned matches
+        async with active_matches_lock:
+            for user_id in list(active_matches.keys()):
+                if active_matches.get(active_matches[user_id]) != user_id:
+                    del active_matches[user_id]
+                    del active_matches[active_matches[user_id]]
+                    user_data[user_id]["match_partner"] = None
+                    print(f"🧹 Cleaned up orphaned match for {user_id}")
+        print(f"✅ Loaded data for {len(user_data)} users from MongoDB")
+        print(f"🔄 Recovered {len(active_matches) // 2} active matches and {len(waiting_users)} waiting users")
+    except Exception as e:
+        print(f"❌ Error connecting to MongoDB: {e}")
 
 # Function to update a single user's data in MongoDB with retries
 async def update_user_data(user_id):
