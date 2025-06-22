@@ -10,3 +10,4 @@ python-telegram-bot==13.7
 tenacity==9.0.0
 pymongo==4.9.1
 python-dotenv==1.0.1
+uvicorn==0.30.6
