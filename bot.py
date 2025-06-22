@@ -1307,7 +1307,12 @@ async def cleanup_inactive_users():
 
 # Main function
 async def main():
-    # Ensure MongoDB indexes are set up
+    # Initialize tasks as None to avoid UnboundLocalError
+    periodic_save_task = None
+    periodic_match_task = None
+    waiting_timeout_task = None
+    cleanup_task = None
+
     try:
         await setup_mongodb_indexes()
         await load_user_data()
@@ -1330,17 +1335,12 @@ async def main():
         logger.error(f"Unexpected error in main: {e}")
         await save_user_data()
     finally:
-        # Cancel background tasks
-        for task in [periodic_save_task, periodic_match_task, waiting_timeout_task, cleanup_task]:
+        # Cancel background tasks if they were created
+        tasks = [task for task in [periodic_save_task, periodic_match_task, waiting_timeout_task, cleanup_task] if task is not None]
+        for task in tasks:
             task.cancel()
         # Wait for tasks to complete cancellation
-        await asyncio.gather(
-            periodic_save_task,
-            periodic_match_task,
-            waiting_timeout_task,
-            cleanup_task,
-            return_exceptions=True
-        )
+        await asyncio.gather(*tasks, return_exceptions=True)
         # Close MongoDB client
         client.close()
         logger.info("MongoDB client closed")
