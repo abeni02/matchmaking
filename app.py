@@ -1,24 +1,27 @@
-import asyncio
 import uvicorn
 from bot import main  # Import the main coroutine from bot.py
 
-# Define an async ASGI application
-async def app():
-    try:
-        # Run the bot's main coroutine
-        await main()
-    except Exception as e:
-        print(f"Error running bot: {e}")
-        # Keep the server running for health checks
-        await asyncio.sleep(3600)  # Uvicorn entry point
+# Define a minimal ASGI application
+async def app(scope, receive, send):
+    if scope["type"] == "http":
+        # Respond to health checks with a simple 200 OK
+        await send({
+            "type": "http.response.start",
+            "status": 200,
+            "headers": [(b"content-type", b"text/plain")],
+        })
+        await send({
+            "type": "http.response.body",
+            "body": b"OK",
+        })
+    # Run the bot in the background
+    await main()
+
 if __name__ == "__main__":
-    # Configure uvicorn server
-    config = uvicorn.Config(
-        app=app:app,
+    uvicorn.run(
+        "app:app",
         host="0.0.0.0",
         port=8080,
         log_level="info",
-        workers=1,  # Single worker to avoid multiprocessing issues
+        workers=1  # Single worker to avoid multiprocessing issues
     )
-    server = uvicorn.Server(config)
-    server.run()
