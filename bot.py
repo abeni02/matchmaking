@@ -207,7 +207,7 @@ async def load_options():
         await options_collection.insert_one(options)
     return options
 
-options = asyncio.run(load_options())
+options = None
 
 # Button texts
 BEGIN_TEXT = "🚀 Begin"
