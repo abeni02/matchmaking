@@ -1,14 +1,11 @@
-from flask import Flask
-import os
+import uvicorn
+from bot import main  # Import the main function from bot.py
 
-# Initialize Flask app with __name__
-app = Flask(__name__)
-
-@app.route('/')
-def hello_world():
-    return 'Hello from Koyeb'
-
-if __name__ == '__main__':
-    # Use the PORT environment variable provided by Koyeb, default to 8080 for local testing
-    port = int(os.getenv('PORT', 8080))
-    app.run(host='0.0.0.0', port=port)
+if __name__ == "__main__":
+    uvicorn.run(
+        main,  # Reference the main coroutine directly
+        host="0.0.0.0",
+        port=8080,
+        log_level="info",
+        workers=1  # Single worker, as aiogram handles concurrency
+    )
