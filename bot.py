@@ -1307,6 +1307,9 @@ async def cleanup_inactive_users():
 
 # Main function
 async def main():
+    global options
+    options = await load_options()  # Load options asynchronously
+
     # Initialize tasks as None to avoid UnboundLocalError
     periodic_save_task = None
     periodic_match_task = None
