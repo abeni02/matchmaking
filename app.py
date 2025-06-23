@@ -22,8 +22,8 @@ async def on_startup():
     try:
         await main()
     except Exception as e:
-        logger.warning(f"Bot main() exited or another instance has lock: {e}")
-        # Do not crash app — keep FastAPI server running
+        logger.error(f"Failed to start bot: {e}")
+        raise  # Propagate the exception to stop the server
 
 @app.get("/health")
 async def health_check():
