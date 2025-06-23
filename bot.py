@@ -1340,7 +1340,7 @@ async def acquire_instance_lock():
         logger.error(f"Failed to acquire instance lock: {e}")
         raise
         #keep lock alive 
-        async def keep_lock_alive(lock_id):
+       async def keep_lock_alive(lock_id):
     while True:
         await asyncio.sleep(300)  # 5 minutes
         try:
