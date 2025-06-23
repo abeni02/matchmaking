@@ -1370,9 +1370,10 @@ async def main():
     try:
         lock_id = await acquire_instance_lock()
         keep_lock_task = asyncio.create_task(keep_lock_alive(lock_id))
-    except Exception as e:
-        logger.error(f"Failed to acquire instance lock: {e}")
-        return
+   except Exception as e:
+    logger.error(f"Failed to acquire instance lock: {e}")
+    logger.warning("Bot will not run, but FastAPI server will stay up")
+    return asyncio.Event().wait()  # <-- this keeps FastAPI alive
 
     dp.include_router(router)  # Ensure handlers are registered
 
