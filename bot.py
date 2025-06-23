@@ -1310,15 +1310,29 @@ from pymongo.errors import DuplicateKeyError
 
 async def acquire_instance_lock():
     lock_id = str(uuid4())
+    now = datetime.datetime.now()
+    staleness_threshold = now - datetime.timedelta(minutes=15)
     try:
-        await db['instance_locks'].create_index([("created_at", 1)], expireAfterSeconds=3600)
-        await db['instance_locks'].insert_one({
-            "_id": "bot_instance",
-            "lock_id": lock_id,
-            "created_at": datetime.datetime.now()
-        })
-        logger.info(f"Acquired instance lock with ID {lock_id}")
-        return lock_id
+        result = await db['instance_locks'].find_one_and_update(
+            {
+                "_id": "bot_instance",
+                "created_at": {"$lt": staleness_threshold}
+            },
+            {
+                "$set": {
+                    "lock_id": lock_id,
+                    "created_at": now
+                }
+            },
+            upsert=True,
+            return_document=ReturnDocument.AFTER
+        )
+        if result and result['lock_id'] == lock_id:
+            logger.info(f"Acquired instance lock with ID {lock_id}")
+            return lock_id
+        else:
+            logger.error("Failed to acquire instance lock: unexpected state")
+            raise Exception("Failed to acquire lock")
     except DuplicateKeyError:
         logger.error("Another bot instance is already running")
         raise Exception("Another bot instance is running")
