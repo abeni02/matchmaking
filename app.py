@@ -1,30 +1,62 @@
 import os
+import signal
+import sys
+import asyncio
 import logging
+import uvicorn
 from fastapi import FastAPI, Request
-from aiogram import Bot
-from bot import bot, dp, main as bot_main
+from bot import main, bot, dp
 
-# Logging config
-logging.basicConfig(level=logging.INFO)
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.StreamHandler(),
+        logging.FileHandler('app.log')
+    ]
+)
 logger = logging.getLogger(__name__)
 
 app = FastAPI()
-
-@app.on_event("startup")
-async def on_startup():
-    logger.info("Starting bot as webhook worker")
-    await bot_main()  # <-- runs the bot inside the FastAPI lifecycle
+bot_task = None
 
 @app.get("/health")
-async def health():
-    return {"status": "ok"}
+async def health_check():
+    logger.info("Health check requested")
+    return {"status": "OK"}
 
 @app.post("/webhook")
 async def webhook(request: Request):
     try:
         update = await request.json()
+        logger.info("Received webhook update")
         await dp.feed_raw_update(bot, update)
         return {"status": "ok"}
     except Exception as e:
-        logger.error(f"Webhook error: {e}")
+        logger.error(f"Error processing webhook update: {e}")
         return {"status": "error"}
+
+def signal_handler(sig, frame):
+    logger.info(f"Received signal {sig}, initiating shutdown...")
+    if bot_task:
+        bot_task.cancel()
+    sys.exit(0)
+
+if __name__ == "__main__":
+    # Register signal handlers for graceful shutdown
+    signal.signal(signal.SIGTERM, signal_handler)
+    signal.signal(signal.SIGINT, signal_handler)
+
+    # Start bot's main function as a background task
+    bot_task = asyncio.create_task(main())
+
+    # Run FastAPI server
+    port = int(os.getenv("PORT", 8080))
+    uvicorn.run(
+        "app:app",
+        host="0.0.0.0",
+        port=port,
+        log_level="info",
+        workers=1
+    )
