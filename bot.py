@@ -20,7 +20,7 @@ from aiogram.exceptions import TelegramAPIError
 from aiogram.utils import markdown
 from motor.motor_asyncio import AsyncIOMotorClient
 from pymongo.errors import PyMongoError
-from pymongo import MongoClient
+from pymongo import MongoClient,ReturnDocument
 import json
 from collections import defaultdict, deque
 from uuid import uuid4
