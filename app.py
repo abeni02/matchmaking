@@ -2,18 +2,25 @@ import os
 import logging
 from fastapi import FastAPI, Request
 from aiogram import Bot
-from bot import bot, dp, main as bot_main
+from bot import bot, dp, main as bot_main, acquire_instance_lock
 
 # Logging config
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 app = FastAPI()
+lock_id = None
 
 @app.on_event("startup")
 async def on_startup():
+    global lock_id
     logger.info("Starting bot as webhook worker")
-    await bot_main()  # <-- runs the bot inside the FastAPI lifecycle
+    try:
+        lock_id = await acquire_instance_lock()
+        await bot_main()  # This contains bot.set_webhook + background tasks
+    except Exception as e:
+        logger.warning(f"Bot won't start (possibly already running): {e}")
+        # Don't crash — just run FastAPI normally
 
 @app.get("/health")
 async def health():
