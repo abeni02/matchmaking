@@ -1339,6 +1339,21 @@ async def acquire_instance_lock():
     except Exception as e:
         logger.error(f"Failed to acquire instance lock: {e}")
         raise
+        #keep lock alive 
+        async def keep_lock_alive(lock_id):
+    while True:
+        await asyncio.sleep(300)  # 5 minutes
+        try:
+            now = datetime.datetime.now()
+            result = await db['instance_locks'].update_one(
+                {"_id": "bot_instance", "lock_id": lock_id},
+                {"$set": {"created_at": now}}
+            )
+            if result.matched_count == 0:
+                logger.warning("Lock no longer held, stopping keep-alive")
+                break
+        except Exception as e:
+            logger.error(f"Failed to update lock: {e}")
 
 async def release_instance_lock(lock_id):
     try:
