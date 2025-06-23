@@ -20,7 +20,7 @@ from aiogram.exceptions import TelegramAPIError
 from aiogram.utils import markdown
 from motor.motor_asyncio import AsyncIOMotorClient
 from pymongo.errors import PyMongoError, DuplicateKeyError
-from pymongo import MongoClient, ReturnDocument  # Added ReturnDocument
+from pymongo import MongoClient, ReturnDocument
 import json
 from collections import defaultdict, deque
 from uuid import uuid4
@@ -1311,26 +1311,26 @@ async def acquire_instance_lock():
     now = datetime.datetime.now()
     staleness_threshold = now - datetime.timedelta(minutes=15)
     try:
-        result = await db['instance_locks'].find_one_and_update(
-            {
-                "_id": "bot_instance",
-                "created_at": {"$lt": staleness_threshold}
-            },
-            {
-                "$set": {
-                    "lock_id": lock_id,
-                    "created_at": now
-                }
-            },
-            upsert=True,
-            return_document=ReturnDocument.AFTER
-        )
-        if result and result['lock_id'] == lock_id:
-            logger.info(f"Acquired instance lock with ID {lock_id}")
-            return lock_id
-        else:
-            logger.error("Failed to acquire instance lock: unexpected state")
-            raise Exception("Failed to acquire lock")
+        # Check for existing lock
+        existing_lock = await db['instance_locks'].find_one({"_id": "bot_instance"})
+        if existing_lock:
+            lock_time = existing_lock.get("created_at")
+            if lock_time < staleness_threshold:
+                # Lock is stale, remove it
+                await db['instance_locks'].delete_one({"_id": "bot_instance"})
+                logger.info("Removed stale lock")
+            else:
+                # Lock is still valid
+                raise Exception("Another bot instance is already running")
+        
+        # Attempt to acquire new lock
+        result = await db['instance_locks'].insert_one({
+            "_id": "bot_instance",
+            "lock_id": lock_id,
+            "created_at": now
+        })
+        logger.info(f"Acquired instance lock with ID {lock_id}")
+        return lock_id
     except DuplicateKeyError:
         logger.error("Another bot instance is already running")
         raise Exception("Another bot instance is running")
@@ -1371,9 +1371,8 @@ async def main():
         lock_id = await acquire_instance_lock()
         keep_lock_task = asyncio.create_task(keep_lock_alive(lock_id))
     except Exception as e:
-    logger.error(f"Failed to acquire instance lock: {e}")
-    logger.warning("Bot will not run, but FastAPI server will stay up")
-    await asyncio.Event().wait()
+        logger.error(f"Failed to acquire instance lock: {e}")
+        raise  # Propagate the exception to FastAPI
 
     dp.include_router(router)  # Ensure handlers are registered
 
@@ -1393,7 +1392,7 @@ async def main():
         webhook_url = os.getenv("WEBHOOK_URL")
         if not webhook_url:
             logger.error("WEBHOOK_URL not set")
-            return
+            raise ValueError("WEBHOOK_URL not set")
         await bot.set_webhook(url=webhook_url, drop_pending_updates=True)
         logger.info(f"Webhook set to {webhook_url}")
 
@@ -1411,6 +1410,7 @@ async def main():
     except Exception as e:
         logger.error(f"Unexpected error in main: {e}")
         await save_user_data()
+        raise
     finally:
         # Cancel background tasks if they were created
         tasks = [task for task in [periodic_save_task, periodic_match_task, waiting_timeout_task, cleanup_task, keep_lock_task] if task is not None]
