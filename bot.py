@@ -1305,10 +1305,47 @@ async def cleanup_inactive_users():
                     logger.error(f"Failed to remove user {user_id}: {e}")
             logger.info(f"Cleaned up {len(users_to_remove)} inactive users")
 
-# Main function
+# Instance locking functions to prevent multiple instances
+from pymongo.errors import DuplicateKeyError
+
+async def acquire_instance_lock():
+    lock_id = str(uuid4())
+    try:
+        await db['instance_locks'].create_index([("created_at", 1)], expireAfterSeconds=3600)
+        await db['instance_locks'].insert_one({
+            "_id": "bot_instance",
+            "lock_id": lock_id,
+            "created_at": datetime.datetime.now()
+        })
+        logger.info(f"Acquired instance lock with ID {lock_id}")
+        return lock_id
+    except DuplicateKeyError:
+        logger.error("Another bot instance is already running")
+        raise Exception("Another bot instance is running")
+    except Exception as e:
+        logger.error(f"Failed to acquire instance lock: {e}")
+        raise
+
+async def release_instance_lock(lock_id):
+    try:
+        await db['instance_locks'].delete_one({"_id": "bot_instance", "lock_id": lock_id})
+        logger.info(f"Released instance lock with ID {lock_id}")
+    except Exception as e:
+        logger.error(f"Failed to release instance lock: {e}")
+
+# Main function with webhook setup
 async def main():
     global options
     options = await load_options()  # Load options asynchronously
+
+    lock_id = None
+    try:
+        lock_id = await acquire_instance_lock()
+    except Exception as e:
+        logger.error(f"Failed to acquire instance lock: {e}")
+        return
+
+    dp.include_router(router)  # Ensure handlers are registered
 
     # Initialize tasks as None to avoid UnboundLocalError
     periodic_save_task = None
@@ -1321,16 +1358,23 @@ async def main():
         await load_user_data()
         logger.info("Bot is running...")
         await set_bot_commands(bot)
-        
+
+        # Set webhook
+        webhook_url = os.getenv("WEBHOOK_URL")
+        if not webhook_url:
+            logger.error("WEBHOOK_URL not set")
+            return
+        await bot.set_webhook(url=webhook_url, drop_pending_updates=True)
+        logger.info(f"Webhook set to {webhook_url}")
+
         # Start background tasks
         periodic_save_task = asyncio.create_task(periodic_save())
         periodic_match_task = asyncio.create_task(periodic_match_check())
         waiting_timeout_task = asyncio.create_task(check_waiting_timeouts())
         cleanup_task = asyncio.create_task(cleanup_inactive_users())
 
-        # Start polling with explicit context manager
-        async with bot:
-            await dp.start_polling(bot, close_bot_session=True)
+        # Keep the bot running for background tasks
+        await asyncio.Event().wait()
     except KeyboardInterrupt:
         logger.info("Received shutdown signal, saving data...")
         await save_user_data()
@@ -1344,6 +1388,18 @@ async def main():
             task.cancel()
         # Wait for tasks to complete cancellation
         await asyncio.gather(*tasks, return_exceptions=True)
+
+        # Release instance lock
+        if lock_id:
+            await release_instance_lock(lock_id)
+
+        # Clean up webhook
+        try:
+            await bot.delete_webhook(drop_pending_updates=True)
+            logger.info("Webhook deleted")
+        except Exception as e:
+            logger.error(f"Failed to delete webhook: {e}")
+
         # Close MongoDB client
         client.close()
         logger.info("MongoDB client closed")
