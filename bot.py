@@ -19,8 +19,8 @@ from aiogram.types import (
 from aiogram.exceptions import TelegramAPIError
 from aiogram.utils import markdown
 from motor.motor_asyncio import AsyncIOMotorClient
-from pymongo.errors import PyMongoError
-from pymongo import MongoClient,ReturnDocument
+from pymongo.errors import PyMongoError, DuplicateKeyError
+from pymongo import MongoClient, ReturnDocument  # Added ReturnDocument
 import json
 from collections import defaultdict, deque
 from uuid import uuid4
@@ -1306,8 +1306,6 @@ async def cleanup_inactive_users():
             logger.info(f"Cleaned up {len(users_to_remove)} inactive users")
 
 # Instance locking functions to prevent multiple instances
-from pymongo.errors import DuplicateKeyError
-
 async def acquire_instance_lock():
     lock_id = str(uuid4())
     now = datetime.datetime.now()
@@ -1339,8 +1337,8 @@ async def acquire_instance_lock():
     except Exception as e:
         logger.error(f"Failed to acquire instance lock: {e}")
         raise
-        #keep lock alive 
-       async def keep_lock_alive(lock_id):
+
+async def keep_lock_alive(lock_id):
     while True:
         await asyncio.sleep(300)  # 5 minutes
         try:
@@ -1368,6 +1366,7 @@ async def main():
     options = await load_options()  # Load options asynchronously
 
     lock_id = None
+    keep_lock_task = None
     try:
         lock_id = await acquire_instance_lock()
         keep_lock_task = asyncio.create_task(keep_lock_alive(lock_id))
@@ -1382,7 +1381,6 @@ async def main():
     periodic_match_task = None
     waiting_timeout_task = None
     cleanup_task = None
-    keep_lock_task = None  # Already defined above
 
     try:
         await setup_mongodb_indexes()
@@ -1435,3 +1433,6 @@ async def main():
         client.close()
         logger.info("MongoDB client closed")
         logger.info("Bot has been gracefully shut down")
+
+if __name__ == "__main__":
+    asyncio.run(main())
