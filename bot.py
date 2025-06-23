@@ -1370,6 +1370,7 @@ async def main():
     lock_id = None
     try:
         lock_id = await acquire_instance_lock()
+        keep_lock_task = asyncio.create_task(keep_lock_alive(lock_id))
     except Exception as e:
         logger.error(f"Failed to acquire instance lock: {e}")
         return
@@ -1381,6 +1382,7 @@ async def main():
     periodic_match_task = None
     waiting_timeout_task = None
     cleanup_task = None
+    keep_lock_task = None  # Already defined above
 
     try:
         await setup_mongodb_indexes()
@@ -1412,7 +1414,7 @@ async def main():
         await save_user_data()
     finally:
         # Cancel background tasks if they were created
-        tasks = [task for task in [periodic_save_task, periodic_match_task, waiting_timeout_task, cleanup_task] if task is not None]
+        tasks = [task for task in [periodic_save_task, periodic_match_task, waiting_timeout_task, cleanup_task, keep_lock_task] if task is not None]
         for task in tasks:
             task.cancel()
         # Wait for tasks to complete cancellation
@@ -1433,6 +1435,3 @@ async def main():
         client.close()
         logger.info("MongoDB client closed")
         logger.info("Bot has been gracefully shut down")
-
-if __name__ == "__main__":
-    asyncio.run(main())
