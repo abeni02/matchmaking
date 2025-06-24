@@ -1343,7 +1343,7 @@ async def acquire_instance_lock():
             logger.warning("Failed to acquire lock, retrying...")
             await asyncio.sleep(1)
             return await acquire_instance_lock()
-    except pymongo.errors.DuplicateKeyError:
+    except DuplicateKeyError:
         # Handle duplicate key error by checking lock staleness
         existing_lock = await db['instance_locks'].find_one({"_id": "bot_instance"})
         if existing_lock and existing_lock.get("created_at", now) < staleness_threshold:
