@@ -9,7 +9,6 @@ from aiogram.types import (
     Message,
     InlineKeyboardMarkup,
     InlineKeyboardButton,
-    CallbackQuery,
     ReplyKeyboardMarkup,
     KeyboardButton,
     BotCommand,
@@ -19,6 +18,7 @@ from aiogram.types import (
 from aiogram.exceptions import TelegramAPIError
 from aiogram.utils import markdown
 from motor.motor_asyncio import AsyncIOMotorClient
+import pymongo
 from pymongo.errors import PyMongoError, DuplicateKeyError
 from pymongo import MongoClient, ReturnDocument
 import json
@@ -42,6 +42,7 @@ CHANNEL_ID = os.getenv('CHANNEL_ID')
 GROUP_ID = os.getenv('GROUP_ID')
 GROUP_INVITE_LINK = os.getenv('GROUP_INVITE_LINK')
 MONGODB_URI = os.getenv('MONGODB_URI')
+WEBHOOK_URL = os.getenv('WEBHOOK_URL')
 MAX_ACTIVE_USERS = int(os.getenv('MAX_ACTIVE_USERS', 600))
 MAX_CONCURRENT_MATCHES = int(os.getenv('MAX_CONCURRENT_MATCHES', 300))
 COOLDOWN_HOURS = int(os.getenv('COOLDOWN_HOURS', 4))
@@ -53,11 +54,12 @@ NOTIFICATION_DELAY_SECONDS = float(os.getenv('NOTIFICATION_DELAY_SECONDS', 0))
 # Global lock for state consistency
 global_state_lock = asyncio.Lock()
 
-# Rate limiting storage
+# Rate limiting storage with lock
 rate_limits = defaultdict(lambda: {
     "commands": deque(maxlen=10),
     "messages": deque(maxlen=20)
 })
+rate_limit_lock = asyncio.Lock()
 
 # Circuit breaker for MongoDB
 class CircuitBreaker:
@@ -129,7 +131,7 @@ def load_fallback_storage():
 def test_mongodb_connection(uri: str, max_attempts=3, delay=5):
     for attempt in range(max_attempts):
         try:
-            client = MongoClient(uri, serverSelectionTimeoutMS=5000)
+            client = MongoClient(uri, serverSelectionTimeoutMS=10000)
             client.admin.command('ping')
             client.close()
             logger.info("MongoDB connection test passed")
@@ -153,8 +155,17 @@ def validate_env_vars():
         raise ValueError("Invalid or missing GROUP_INVITE_LINK")
     if not MONGODB_URI or not MONGODB_URI.startswith('mongodb'):
         raise ValueError("Invalid or missing MONGODB_URI")
+    if not WEBHOOK_URL or not WEBHOOK_URL.startswith('https://'):
+        raise ValueError("Invalid or missing WEBHOOK_URL")
     if not test_mongodb_connection(MONGODB_URI):
         raise ValueError("Cannot connect to MongoDB with provided URI")
+    try:
+        if int(os.getenv('MAX_ACTIVE_USERS', 600)) <= 0:
+            raise ValueError("MAX_ACTIVE_USERS must be positive")
+        if int(os.getenv('COOLDOWN_HOURS', 4)) < 0:
+            raise ValueError("COOLDOWN_HOURS must be non-negative")
+    except ValueError as e:
+        raise ValueError(f"Invalid environment variable: {e}")
     logger.info("Environment variables validated successfully")
 
 # Set bot commands for private chats only
@@ -177,7 +188,7 @@ router = Router()
 dp = Dispatcher()
 
 # MongoDB setup
-client = AsyncIOMotorClient(MONGODB_URI)
+client = AsyncIOMotorClient(MONGODB_URI, serverSelectionTimeoutMS=10000)
 db = client['bot_database']
 users_collection = db['users']
 cooldowns_collection = db['cooldowns']
@@ -406,19 +417,20 @@ async def rate_limit_middleware(handler, event, data):
     if not user_id:
         return await handler(event, data)
     now = datetime.datetime.now()
-    user_limit = rate_limits[user_id]
-    is_command = isinstance(event, Message) and event.text.startswith('/')
-    is_callback = isinstance(event, CallbackQuery)
-    limit_key = "commands" if is_command or is_callback else "messages"
-    max_requests = 10 if limit_key == "commands" else 20
-    window_seconds = 5 if limit_key == "commands" else 10
-    queue = user_limit[limit_key]
-    while queue and (now - queue[0]).total_seconds() > window_seconds:
-        queue.popleft()
-    queue.append(now)
-    if len(queue) > max_requests:
-        await event.answer(f"⏳ Too many {limit_key}. Please wait a few seconds.", show_alert=True)
-        return
+    async with rate_limit_lock:
+        user_limit = rate_limits[user_id]
+        is_command = isinstance(event, Message) and event.text.startswith('/')
+        is_callback = isinstance(event, CallbackQuery)
+        limit_key = "commands" if is_command or is_callback else "messages"
+        max_requests = 10 if limit_key == "commands" else 20
+        window_seconds = 5 if limit_key == "commands" else 10
+        queue = user_limit[limit_key]
+        while queue and (now - queue[0]).total_seconds() > window_seconds:
+            queue.popleft()
+        queue.append(now)
+        if len(queue) > max_requests:
+            await event.answer(f"⏳ Too many {limit_key}. Please wait a few seconds.", show_alert=True)
+            return
     return await handler(event, data)
 
 router.message.middleware(rate_limit_middleware)
@@ -913,13 +925,15 @@ async def forward_messages(message: Message):
                     message_id_map[partner_id][forwarded_message.message_id] = message.message_id
             break
         except TelegramAPIError as e:
+            if "429" in str(e):  # Rate limit error
+                await asyncio.sleep(2 ** attempt * 2)  # Exponential backoff
+                continue
             logger.error(f"Failed to forward message from {user_id} to {partner_id}, attempt {attempt + 1}: {e}")
             if attempt == max_retries - 1:
                 await message.answer(
                     "⚠️ Unable to send your message due to a server issue. Please try again later or contact @Ask_and_feedback_bot."
                 )
                 return
-            await asyncio.sleep(2 ** attempt)
     try:
         await bot.send_message(chat_id=CHANNEL_ID, text=channel_message)
         if message.photo:
@@ -989,9 +1003,9 @@ async def handle_age_selection(callback: CallbackQuery):
     try:
         age = int(selected_age)
         if age < 18 or age > 100:
-            raise ValueError
+            raise ValueError("Age must be between 18 and 100")
     except ValueError:
-        await callback.answer(text="Invalid age selected", show_alert=True)
+        await callback.answer(text="Please select a valid age (18-100)", show_alert=True)
         return
     async with global_state_lock:
         if user_id not in user_data:
@@ -1306,21 +1320,15 @@ async def cleanup_inactive_users():
             logger.info(f"Cleaned up {len(users_to_remove)} inactive users")
 
 # Instance locking functions to prevent multiple instances
-async def acquire_instance_lock():
+async def acquire_instance_lock(attempt=0, max_attempts=5):
+    if attempt >= max_attempts:
+        raise Exception("Failed to acquire lock after maximum retries")
     lock_id = str(uuid4())
     now = datetime.datetime.now()
     staleness_threshold = now - datetime.timedelta(minutes=15)
     try:
-        # Attempt to acquire or update lock atomically
         result = await db['instance_locks'].find_one_and_update(
-            {
-                "_id": "bot_instance",
-                "$or": [
-                    {"created_at": {"$lt": staleness_threshold}},
-                    {"lock_id": {"$exists": False}},
-                    {"_id": {"$exists": False}}  # Handle case where document doesn't exist
-                ]
-            },
+            {"_id": "bot_instance"},
             {
                 "$set": {
                     "lock_id": lock_id,
@@ -1334,27 +1342,21 @@ async def acquire_instance_lock():
             logger.info(f"Acquired instance lock with ID {lock_id}")
             return lock_id
         else:
-            # Check if another instance holds a valid lock
-            existing_lock = await db['instance_locks'].find_one({"_id": "bot_instance"})
-            if existing_lock and existing_lock.get("created_at", now) >= staleness_threshold:
-                logger.error(f"Another bot instance is already running. Existing lock: {existing_lock}")
-                raise Exception("Another bot instance is running")
-            # Retry if lock was stale but update failed
-            logger.warning("Failed to acquire lock, retrying...")
-            await asyncio.sleep(1)
-            return await acquire_instance_lock()
+            await asyncio.sleep(2 ** attempt)
+            return await acquire_instance_lock(attempt + 1, max_attempts)
     except pymongo.errors.DuplicateKeyError:
         # Handle duplicate key error by checking lock staleness
         existing_lock = await db['instance_locks'].find_one({"_id": "bot_instance"})
         if existing_lock and existing_lock.get("created_at", now) < staleness_threshold:
             logger.info("Removing stale lock")
             await db['instance_locks'].delete_one({"_id": "bot_instance"})
-            return await acquire_instance_lock()  # Retry after removing stale lock
+            return await acquire_instance_lock(attempt + 1, max_attempts)
         logger.error(f"Failed to acquire instance lock: Valid lock exists: {existing_lock}")
         raise Exception("Another bot instance is running")
     except Exception as e:
         logger.error(f"Failed to acquire instance lock: {e}")
         raise
+
 async def keep_lock_alive(lock_id):
     while True:
         await asyncio.sleep(300)  # 5 minutes
@@ -1406,12 +1408,11 @@ async def main():
         await set_bot_commands(bot)
 
         # Set webhook
-        webhook_url = os.getenv("WEBHOOK_URL")
-        if not webhook_url:
+        if not WEBHOOK_URL:
             logger.error("WEBHOOK_URL not set")
             raise ValueError("WEBHOOK_URL not set")
-        await bot.set_webhook(url=webhook_url, drop_pending_updates=True)
-        logger.info(f"Webhook set to {webhook_url}")
+        await bot.set_webhook(url=WEBHOOK_URL, drop_pending_updates=True)
+        logger.info(f"Webhook set to {WEBHOOK_URL}")
 
         # Start background tasks
         periodic_save_task = asyncio.create_task(periodic_save())
@@ -1434,7 +1435,12 @@ async def main():
         for task in tasks:
             task.cancel()
         # Wait for tasks to complete cancellation
-        await asyncio.gather(*tasks, return_exceptions=True)
+        try:
+            await asyncio.gather(*tasks)
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            logger.error(f"Error during task cleanup: {e}")
 
         # Release instance lock
         if lock_id:
