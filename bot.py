@@ -3,6 +3,7 @@ import os
 import datetime
 import logging
 import re
+import time
 from typing import Optional
 from aiogram import Bot, Dispatcher, Router, F
 from aiogram.types import (
@@ -140,7 +141,7 @@ def test_mongodb_connection(uri: str, max_attempts=3, delay=5):
             logger.error(f"MongoDB connection test attempt {attempt + 1} failed: {e}")
             if attempt < max_attempts - 1:
                 logger.info(f"Retrying in {delay} seconds...")
-                asyncio.sleep(delay)
+                time.sleep(delay)
     logger.error("Failed to connect to MongoDB after retries")
     return False
 
