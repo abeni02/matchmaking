@@ -1311,33 +1311,40 @@ async def acquire_instance_lock():
     now = datetime.datetime.now()
     staleness_threshold = now - datetime.timedelta(minutes=15)
     try:
-        # Check for existing lock
-        existing_lock = await db['instance_locks'].find_one({"_id": "bot_instance"})
-        if existing_lock:
-            lock_time = existing_lock.get("created_at")
-            if lock_time < staleness_threshold:
-                # Lock is stale, remove it
-                await db['instance_locks'].delete_one({"_id": "bot_instance"})
-                logger.info("Removed stale lock")
-            else:
-                # Lock is still valid
-                raise Exception("Another bot instance is already running")
-        
-        # Attempt to acquire new lock
-        result = await db['instance_locks'].insert_one({
-            "_id": "bot_instance",
-            "lock_id": lock_id,
-            "created_at": now
-        })
-        logger.info(f"Acquired instance lock with ID {lock_id}")
-        return lock_id
-    except DuplicateKeyError:
-        logger.error("Another bot instance is already running")
-        raise Exception("Another bot instance is running")
+        # Attempt to acquire or update lock atomically
+        result = await db['instance_locks'].find_one_and_update(
+            {
+                "_id": "bot_instance",
+                "$or": [
+                    {"created_at": {"$lt": staleness_threshold}},
+                    {"lock_id": {"$exists": False}}
+                ]
+            },
+            {
+                "$set": {
+                    "lock_id": lock_id,
+                    "created_at": now
+                }
+            },
+            upsert=True,
+            return_document=ReturnDocument.AFTER
+        )
+        if result and result.get("lock_id") == lock_id:
+            logger.info(f"Acquired instance lock with ID {lock_id}")
+            return lock_id
+        else:
+            # Check if another instance holds a valid lock
+            existing_lock = await db['instance_locks'].find_one({"_id": "bot_instance"})
+            if existing_lock and existing_lock.get("created_at") >= staleness_threshold:
+                logger.error(f"Another bot instance is already running. Existing lock: {existing_lock}")
+                raise Exception("Another bot instance is running")
+            # Retry if lock was stale but update failed
+            logger.warning("Failed to acquire lock, retrying...")
+            await asyncio.sleep(1)
+            return await acquire_instance_lock()
     except Exception as e:
         logger.error(f"Failed to acquire instance lock: {e}")
         raise
-
 async def keep_lock_alive(lock_id):
     while True:
         await asyncio.sleep(300)  # 5 minutes
