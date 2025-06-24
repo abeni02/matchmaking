@@ -1413,7 +1413,7 @@ async def main():
         if not WEBHOOK_URL:
             logger.error("WEBHOOK_URL not set")
             raise ValueError("WEBHOOK_URL not set")
-        await bot.set_webhook(url=WEBHOOK_URL, drop_pending_updates=True)
+       
         logger.info(f"Webhook set to {WEBHOOK_URL}")
 
         # Start background tasks
