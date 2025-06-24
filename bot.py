@@ -1393,8 +1393,55 @@ async def main():
         keep_lock_task = asyncio.create_task(keep_lock_alive(lock_id))
     except Exception as e:
         logger.error(f"Failed to acquire instance lock: {e}")
-        raise  # Propagate the exception to FastAPI
+        raise
 
+    dp.include_router(router)  # Ensure handlers are registered
+
+    periodic_save_task = None
+    periodic_match_task = None
+    waiting_timeout_task = None
+    cleanup_task = None
+
+    try:
+        await setup_mongodb_indexes()
+        await load_user_data()
+        logger.info("Bot is running...")
+        await set_bot_commands(bot)
+
+        # Start background tasks
+        periodic_save_task = asyncio.create_task(periodic_save())
+        periodic_match_task = asyncio.create_task(periodic_match_check())
+        waiting_timeout_task = asyncio.create_task(check_waiting_timeouts())
+        cleanup_task = asyncio.create_task(cleanup_inactive_users())
+
+        # Start polling instead of webhook
+        logger.info("Starting polling...")
+        await dp.start_polling(bot, handle_signals=True, skip_updates=True)
+
+    except KeyboardInterrupt:
+        logger.info("Received shutdown signal, saving data...")
+        await save_user_data()
+    except Exception as e:
+        logger.error(f"Unexpected error in main: {e}")
+        await save_user_data()
+        raise
+    finally:
+        # Cancel background tasks
+        tasks = [task for task in [periodic_save_task, periodic_match_task, waiting_timeout_task, cleanup_task, keep_lock_task] if task is not None]
+        for task in tasks:
+            task.cancel()
+        try:
+            await asyncio.gather(*tasks)
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            logger.error(f"Error during task cleanup: {e}")
+
+        # No webhook to delete in polling mode
+        # Close MongoDB client
+        client.close()
+        logger.info("MongoDB client closed")
+        logger.info("Bot has been gracefully shut down")
     dp.include_router(router)  # Ensure handlers are registered
 
     # Initialize tasks as None to avoid UnboundLocalError
