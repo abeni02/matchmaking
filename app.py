@@ -1,5 +1,6 @@
 import os
 import logging
+import asyncio
 from fastapi import FastAPI, Request
 from bot import main, bot, dp
 
@@ -16,14 +17,26 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI()
 
+# Store the bot task globally so we can manage it if needed
+bot_task = None
+
 @app.on_event("startup")
 async def on_startup():
-    logger.info("FastAPI startup - launching bot...")
-    try:
-        await main()
-    except Exception as e:
-        logger.error(f"Failed to start bot: {e}")
-        raise  # Propagate the exception to stop the server
+    global bot_task
+    logger.info("FastAPI startup - launching bot in background...")
+    # Run your bot's main in the background (does NOT block FastAPI)
+    bot_task = asyncio.create_task(main())
+
+@app.on_event("shutdown")
+async def on_shutdown():
+    global bot_task
+    logger.info("FastAPI shutting down...")
+    if bot_task:
+        bot_task.cancel()
+        try:
+            await bot_task
+        except asyncio.CancelledError:
+            logger.info("Bot task cancelled cleanly.")
 
 @app.get("/health")
 async def health_check():
