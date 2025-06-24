@@ -138,7 +138,7 @@ def test_mongodb_connection(uri: str, max_attempts=3, delay=5):
             logger.error(f"MongoDB connection test attempt {attempt + 1} failed: {e}")
             if attempt < max_attempts - 1:
                 logger.info(f"Retrying in {delay} seconds...")
-         asyncio.sleep(delay)
+                asyncio.sleep(delay)
     logger.error("Failed to connect to MongoDB after retries")
     return False
 
@@ -1343,7 +1343,7 @@ async def acquire_instance_lock():
             logger.warning("Failed to acquire lock, retrying...")
             await asyncio.sleep(1)
             return await acquire_instance_lock()
-    except DuplicateKeyError:
+    except pymongo.errors.DuplicateKeyError:
         # Handle duplicate key error by checking lock staleness
         existing_lock = await db['instance_locks'].find_one({"_id": "bot_instance"})
         if existing_lock and existing_lock.get("created_at", now) < staleness_threshold:
