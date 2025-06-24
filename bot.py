@@ -8,6 +8,7 @@ from typing import Optional
 from aiogram import Bot, Dispatcher, Router, F
 from aiogram.types import (
     Message,
+    CallbackQuery,   
     InlineKeyboardMarkup,
     InlineKeyboardButton,
     ReplyKeyboardMarkup,
