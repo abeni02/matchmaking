@@ -138,7 +138,7 @@ def test_mongodb_connection(uri: str, max_attempts=3, delay=5):
             logger.error(f"MongoDB connection test attempt {attempt + 1} failed: {e}")
             if attempt < max_attempts - 1:
                 logger.info(f"Retrying in {delay} seconds...")
-                asyncio.sleep(delay)
+            await asyncio.sleep(delay)
     logger.error("Failed to connect to MongoDB after retries")
     return False
 
