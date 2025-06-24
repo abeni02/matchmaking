@@ -1409,12 +1409,7 @@ async def main():
         logger.info("Bot is running...")
         await set_bot_commands(bot)
 
-        # Set webhook
-        if not WEBHOOK_URL:
-            logger.error("WEBHOOK_URL not set")
-            raise ValueError("WEBHOOK_URL not set")
        
-        logger.info(f"Webhook set to {WEBHOOK_URL}")
 
         # Start background tasks
         periodic_save_task = asyncio.create_task(periodic_save())
