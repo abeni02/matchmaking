@@ -1317,7 +1317,8 @@ async def acquire_instance_lock():
                 "_id": "bot_instance",
                 "$or": [
                     {"created_at": {"$lt": staleness_threshold}},
-                    {"lock_id": {"$exists": False}}
+                    {"lock_id": {"$exists": False}},
+                    {"_id": {"$exists": False}}  # Handle case where document doesn't exist
                 ]
             },
             {
@@ -1335,13 +1336,22 @@ async def acquire_instance_lock():
         else:
             # Check if another instance holds a valid lock
             existing_lock = await db['instance_locks'].find_one({"_id": "bot_instance"})
-            if existing_lock and existing_lock.get("created_at") >= staleness_threshold:
+            if existing_lock and existing_lock.get("created_at", now) >= staleness_threshold:
                 logger.error(f"Another bot instance is already running. Existing lock: {existing_lock}")
                 raise Exception("Another bot instance is running")
             # Retry if lock was stale but update failed
             logger.warning("Failed to acquire lock, retrying...")
             await asyncio.sleep(1)
             return await acquire_instance_lock()
+    except pymongo.errors.DuplicateKeyError:
+        # Handle duplicate key error by checking lock staleness
+        existing_lock = await db['instance_locks'].find_one({"_id": "bot_instance"})
+        if existing_lock and existing_lock.get("created_at", now) < staleness_threshold:
+            logger.info("Removing stale lock")
+            await db['instance_locks'].delete_one({"_id": "bot_instance"})
+            return await acquire_instance_lock()  # Retry after removing stale lock
+        logger.error(f"Failed to acquire instance lock: Valid lock exists: {existing_lock}")
+        raise Exception("Another bot instance is running")
     except Exception as e:
         logger.error(f"Failed to acquire instance lock: {e}")
         raise
