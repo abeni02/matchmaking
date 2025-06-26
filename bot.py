@@ -13,30 +13,7 @@ from aiogram.types import (
 import asyncio
 import os
 import datetime
-import logging
-import re
-import time
-from typing import Optional
-from aiogram.exceptions import TelegramAPIError
-from aiogram.utils import markdown
 from motor.motor_asyncio import AsyncIOMotorClient
-import pymongo
-from pymongo.errors import PyMongoError, DuplicateKeyError
-from pymongo import MongoClient, ReturnDocument
-import json
-from collections import defaultdict, deque
-from uuid import uuid4
-
-# Configure structured logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.StreamHandler(),
-        logging.FileHandler('bot.log')
-    ]
-)
-logger = logging.getLogger(__name__)
 
 # Constants for limits
 MAX_ACTIVE_USERS = 600
@@ -47,114 +24,6 @@ user_data_lock = asyncio.Lock()
 active_matches_lock = asyncio.Lock()
 waiting_users_lock = asyncio.Lock()
 cooldown_tracker_lock = asyncio.Lock()
-
-# Global lock for state consistency
-global_state_lock = asyncio.Lock()
-
-# Rate limiting storage with lock
-rate_limits = defaultdict(lambda: {
-    "commands": deque(maxlen=10),
-    "messages": deque(maxlen=20)
-})
-rate_limit_lock = asyncio.Lock()
-
-# Circuit breaker for MongoDB
-class CircuitBreaker:
-    def __init__(self, max_failures=3, reset_timeout=60):
-        self.max_failures = max_failures
-        self.reset_timeout = reset_timeout
-        self.failures = 0
-        self.last_failure = None
-        self.is_open = False
-
-    async def execute(self, operation, *args, **kwargs):
-        if self.is_open:
-            if (datetime.datetime.now() - self.last_failure).total_seconds() > self.reset_timeout:
-                self.is_open = False
-                self.failures = 0
-                logger.info("Circuit breaker reset, attempting operation")
-            else:
-                logger.error("Circuit breaker open, operation blocked")
-                raise Exception("Database unavailable, please try again later")
-        try:
-            result = await operation(*args, **kwargs)
-            self.failures = 0
-            return result
-        except PyMongoError as e:
-            self.failures += 1
-            self.last_failure = datetime.datetime.now()
-            logger.error(f"MongoDB operation failed: {e}")
-            if self.failures >= self.max_failures:
-                self.is_open = True
-                logger.error(f"Circuit breaker tripped after {self.failures} failures")
-            raise
-
-mongo_circuit_breaker = CircuitBreaker()
-
-# Fallback storage for MongoDB downtime
-fallback_storage = {}
-FALLBACK_FILE = 'fallback_storage.json'
-
-def serialize_datetime(obj):
-    if isinstance(obj, datetime.datetime):
-        return obj.isoformat()
-    raise TypeError("Type not serializable")
-
-def deserialize_datetime(data):
-    for user_id, user_info in data.items():
-        if user_info.get("waiting_since"):
-            data[user_id]["waiting_since"] = datetime.datetime.fromisoformat(user_info["waiting_since"])
-    return data
-
-def save_fallback_storage():
-    try:
-        with open(FALLBACK_FILE, 'w') as f:
-            json.dump(fallback_storage, f, default=serialize_datetime)
-        logger.info("Fallback storage saved to file")
-    except Exception as e:
-        logger.error(f"Failed to save fallback storage: {e}")
-
-def load_fallback_storage():
-    global fallback_storage
-    try:
-        if os.path.exists(FALLBACK_FILE):
-            with open(FALLBACK_FILE, 'r') as f:
-                fallback_storage = deserialize_datetime(json.load(f))
-            logger.info("Fallback storage loaded from file")
-    except Exception as e:
-        logger.error(f"Failed to load fallback storage: {e}")
-
-# Validate environment variables
-def test_mongodb_connection(uri: str, max_attempts=3, delay=5):
-    for attempt in range(max_attempts):
-        try:
-            client = MongoClient(uri, serverSelectionTimeoutMS=10000)
-            client.admin.command('ping')
-            client.close()
-            logger.info("MongoDB connection test passed")
-            return True
-        except Exception as e:
-            logger.error(f"MongoDB connection test attempt {attempt + 1} failed: {e}")
-            if attempt < max_attempts - 1:
-                logger.info(f"Retrying in {delay} seconds...")
-                time.sleep(delay)
-    logger.error("Failed to connect to MongoDB after retries")
-    return False
-
-def validate_env_vars():
-    if not BOT_TOKEN or not re.match(r'^\d+:[A-Za-z0-9_-]+$', BOT_TOKEN):
-        raise ValueError("Invalid or missing BOT_TOKEN")
-    if not CHANNEL_ID or not CHANNEL_ID.startswith('-'):
-        raise ValueError("Invalid or missing CHANNEL_ID")
-    if not GROUP_ID or not GROUP_ID.startswith('-'):
-        raise ValueError("Invalid or missing GROUP_ID")
-    if not GROUP_INVITE_LINK or not GROUP_INVITE_LINK.startswith('https://t.me/'):
-        raise ValueError("Invalid or missing GROUP_INVITE_LINK")
-    if not MONGODB_URI or not MONGODB_URI.startswith('mongodb'):
-        raise ValueError("Invalid or missing MONGODB_URI")
-    if not test_mongodb_connection(MONGODB_URI):
-        raise ValueError("Cannot connect to MongoDB with provided URI")
-    logger.info("Environment variables validated successfully")
 
 # Set bot commands for private chats only
 async def set_bot_commands():
@@ -170,7 +39,7 @@ async def set_bot_commands():
     print("✅ Bot commands set for private chats only and removed from group chats")
 
 # Bot token, channel ID, group ID, and group invite link setup
-BOT_TOKEN = tombéenv('BOT_TOKEN')
+BOT_TOKEN = os.getenv('BOT_TOKEN')
 CHANNEL_ID = os.getenv('CHANNEL_ID')
 GROUP_ID = os.getenv('GROUP_ID')
 GROUP_INVITE_LINK = os.getenv('GROUP_INVITE_LINK')
@@ -187,7 +56,6 @@ if not GROUP_INVITE_LINK:
 if not MONGODB_URI:
     raise ValueError("No MONGODB_URI found in environment variables. Please set it securely.")
 
-validate_env_vars()
 bot = Bot(token=BOT_TOKEN)
 router = Router()
 dp = Dispatcher()
@@ -220,7 +88,7 @@ def get_gender_emoji(gender):
     else:
         return "❓"
 
-# Function to save all user data to MongoDB with retries and fallback
+# Function to save all user data to MongoDB with retries
 async def save_user_data():
     async with user_data_lock:
         users_to_save = {uid: data.copy() for uid, data in user_data.items()}
@@ -235,23 +103,29 @@ async def save_user_data():
             else:
                 users_to_save[user_id]["waiting_since"] = None
     for user_id, data in users_to_save.items():
-        try:
-            await mongo_circuit_breaker.execute(
-                users_collection.replace_one,
-                {'_id': user_id},
-                {'_id': user_id, **data},
-                upsert=True
-            )
-        except Exception as e:
-            print(f"❌ Failed to save user {user_id} to MongoDB: {e}")
-            fallback_storage[user_id] = data
-            save_fallback_storage()
-    print(f"✅ All user data saved to MongoDB or fallback storage")
+        for attempt in range(3):
+            try:
+                await users_collection.replace_one(
+                    {'_id': user_id},
+                    {'_id': user_id, **data},
+                    upsert=True
+                )
+                break
+            except Exception as e:
+                print(f"❌ Error saving user {user_id} to MongoDB (attempt {attempt+1}): {e}")
+                if attempt < 2:
+                    await asyncio.sleep(2 ** attempt)
+                else:
+                    print(f"❌ Failed to save user {user_id} after 3 attempts")
+    print(f"✅ All user data saved to MongoDB")
 
 # Function to load user data from MongoDB and rebuild states
 async def load_user_data():
     global user_data, active_matches, waiting_users, waiting_start_times
-    load_fallback_storage()
+    user_data = {}
+    active_matches = {}
+    waiting_users = set()
+    waiting_start_times = {}
     try:
         async for document in users_collection.find():
             try:
@@ -278,35 +152,10 @@ async def load_user_data():
                     del active_matches[active_matches[user_id]]
                     user_data[user_id]["match_partner"] = None
                     print(f"🧹 Cleaned up orphaned match for {user_id}")
-        if fallback_storage:
-            for user_id, data in fallback_storage.items():
-                await mongo_circuit_breaker.execute(
-                    users_collection.replace_one,
-                    {'_id': user_id},
-                    {'_id': user_id, **data},
-                    upsert=True
-                )
-            fallback_storage.clear()
-            os.remove(FALLBACK_FILE) if os.path.exists(FALLBACK_FILE) else None
-            print("💾 Fallback storage synced to MongoDB")
         print(f"✅ Loaded data for {len(user_data)} users from MongoDB")
         print(f"🔄 Recovered {len(active_matches) // 2} active matches and {len(waiting_users)} waiting users")
     except Exception as e:
         print(f"❌ Error connecting to MongoDB: {e}")
-        user_data = fallback_storage.copy()
-        for user_id, data in user_data.items():
-            match_partner = data.get("match_partner")
-            if match_partner and match_partner in user_data:
-                if user)$.
-
-get(match_partner).get("match_partner") == user_id:
-                    active_matches[user_id] = match_partner
-                    active_matches[match_partner] = user_id
-            waiting_since = data.get("waiting_since")
-            if waiting_since:
-                waiting_users.add(user_id)
-                waiting_start_times[user_id] = waiting_since
-        print("✅ Loaded data from fallback storage due to MongoDB failure")
 
 # Function to update a single user's data in MongoDB, including state
 async def update_user_data(user_id):
@@ -322,18 +171,21 @@ async def update_user_data(user_id):
                 user_info["waiting_since"] = waiting_start_times.get(user_id)
             else:
                 user_info["waiting_since"] = None
-        try:
-            await mongo_circuit_breaker.execute(
-                users_collection.replace_one,
-                {'_id': user_id},
-                {'_id': user_id, **user_info},
-                upsert=True
-            )
-            print(f"✅ Updated user {user_id} in MongoDB")
-        except Exception as e:
-            print(f"❌ Failed to update user {user_id} in MongoDB: {e}")
-            fallback_storage[user_id] = user_info
-            save_fallback_storage()
+        for attempt in range(3):
+            try:
+                await users_collection.replace_one(
+                    {'_id': user_id},
+                    {'_id': user_id, **user_info},
+                    upsert=True
+                )
+                print(f"✅ Updated user {user_id} in MongoDB")
+                return
+            except Exception as e:
+                print(f"❌ Error updating user {user_id} in MongoDB (attempt {attempt+1}): {e}")
+                if attempt < 2:
+                    await asyncio.sleep(2 ** attempt)
+                else:
+                    print(f"❌ Failed to update user {user_id} after 3 attempts")
     else:
         print(f"⚠️ User {user_id} not found in user_data")
 
@@ -428,31 +280,6 @@ def get_setup_inline_keyboard():
             [InlineKeyboardButton(text="Show Profile", callback_data="show_setup")],
         ]
     )
-
-# Rate limiting middleware
-async def rate_limit_middleware(handler, event, data):
-    user_id = event.from_user.id if hasattr(event, 'from_user') else None
-    if not user_id:
-        return await handler(event, data)
-    now = datetime.datetime.now()
-    async with rate_limit_lock:
-        user_limit = rate_limits[user_id]
-        is_command = isinstance(event, Message) and event.text.startswith('/')
-        is_callback = isinstance(event, CallbackQuery)
-        limit_key = "commands" if is_command or is_callback else "messages"
-        max_requests = 10 if limit_key == "commands" else 20
-        window_seconds = 5 if limit_key == "commands" else 10
-        queue = user_limit[limit_key]
-        while queue and (now - queue[0]).total_seconds() > window_seconds:
-            queue.popleft()
-        queue.append(now)
-        if len(queue) > max_requests:
-            await event.answer(f"⏳ Too many {limit_key}. Please wait a few seconds.", show_alert=True)
-            return
-    return await handler(event, data)
-
-router.message.middleware(rate_limit_middleware)
-router.callback_query.middleware(rate_limit_middleware)
 
 # Define the /start command with membership check
 @router.message(F.chat.type == "private", F.text == "/start")
@@ -791,14 +618,11 @@ async def handle_matching_button(message: Message):
             "❌ You have ended the session. You can press 'Begin' again to find a new partner.",
             reply_markup=get_main_keyboard(state="idle")
         )
-        try:
-            await bot.send_message(
-                chat_id=match_id,
-                text="❌ Your partner has ended the session. You can press 'Begin' again to find a new partner.",
-                reply_markup=get_main_keyboard(state="idle")
-            )
-        except TelegramAPIError as e:
-            print(f"❌ Failed to notify user {match_id}: {e}")
+        await bot.send_message(
+            chat_id=match_id,
+            text="❌ Your partner has ended the session. You can press 'Begin' again to find a new partner.",
+            reply_markup=get_main_keyboard(state="idle")
+        )
         asyncio.create_task(try_match_queued_users())
 
 # Handle "Help" button or command
@@ -816,7 +640,7 @@ async def handle_help(message: Message):
         )
     )
 
-# Forward messages with improved error handling and retries
+# Forward messages with improved error handling
 @router.message(F.chat.type == "private", F.text | F.document | F.photo | F.video | F.audio | F.voice | F.video_note | F.sticker)
 async def forward_messages(message: Message):
     user_id = message.from_user.id
@@ -825,64 +649,39 @@ async def forward_messages(message: Message):
     print(f"📋 Active matches: {active_matches}")
     print(f"🗂️ Current message_id_map: {message_id_map}")
 
-    if current_state != "chatting":
-        await message.answer(
-            text="⚠️ You are not currently chatting with anyone. Press 'Begin' to find a partner.",
-            reply_markup=get_main_keyboard(state="idle" if current_state != "searching" else "searching")
-        )
-        return
-
-    async with active_matches_lock:
-        partner_id = active_matches.get(user_id)
-        if not partner_id:
+    if current_state == "chatting":
+        async with active_matches_lock:
+            partner_id = active_matches.get(user_id)
+        if partner_id is None:
             await message.answer(
-                text="⚠️ You are not currently chatting with anyone. Press 'Begin' to find a partner.",
+                "⚠️ You are not currently chatting with anyone. Press 'Begin' to find a partner.",
                 reply_markup=get_main_keyboard(state="idle")
             )
             return
 
-    try:
-        await bot.get_chat(partner_id)
-    except TelegramAPIError as e:
-        print(f"❌ Partner {partner_id} unavailable: {e}")
-        async with active_matches_lock:
-            active_matches.pop(user_id, None)
-            active_matches.pop(partner_id, None)
-            message_id_map.pop(user_id, None)
-            message_id_map.pop(partner_id, None)
-        update_user_data_now(user_id)
-        update_user_data_now(partner_id)
-        await message.answer(
-            text="❌ Your partner is no longer available. Press 'Begin' to find a new partner.",
-            reply_markup=get_main_keyboard(state="idle")
-        )
-        return
+        message_id_map.setdefault(user_id, {})
+        message_id_map.setdefault(partner_id, {})
+        sender_gender = user_data.get(user_id, {}).get("gender", "Not set")
+        gender_emoji = get_gender_emoji(sender_gender)
+        label = f"Partner {gender_emoji}: "
+        reply_to_message_id = None
+        reply_info = ""
+        if message.reply_to_message:
+            original_reply_id = message.reply_to_message.message_id
+            print(f"↩️ Detected reply from {user_id} to message {original_reply_id}")
+            reply_to_message_id = message_id_map.get(user_id, {}).get(original_reply_id)
+            if not reply_to_message_id:
+                print(f"⚠️ No mapped message ID found for reply from {user_id} to {original_reply_id}")
+                reply_info = f" (reply to message ID {original_reply_id}, mapping not found)"
+            else:
+                print(f"✅ Found mapped reply_to_message_id for user {user_id}: {reply_to_message_id}")
+                reply_info = f" (reply to message ID {reply_to_message_id})"
 
-    message_id_map.setdefault(user_id, {})
-    message_id_map.setdefault(partner_id, {})
-    sender_gender = user_data.get(user_id, {}).get("gender", "Not set")
-    gender_emoji = get_gender_emoji(sender_gender)
-    label = f"Partner {gender_emoji}: "
-    reply_to_message_id = None
-    reply_info = ""
-    if message.reply_to_message:
-        original_reply_id = message.reply_to_message.message_id
-        print(f"↩️ Detected reply from {user_id} to message {original_reply_id}")
-        reply_to_message_id = message_id_map.get(user_id, {}).get(original_reply_id)
-        if not reply_to_message_id:
-            print(f"⚠️ No mapped message ID found for reply from {user_id} to {original_reply_id}")
-            reply_info = f" (reply to message ID {original_reply_id}, mapping not found)"
-        else:
-            print(f"✅ Found mapped reply_to_message_id for user {user_id}: {reply_to_message_id}")
-            reply_info = f" (reply to message ID {reply_to_message_id})"
+        user_info = await bot.get_chat(user_id)
+        sender_name = user_info.first_name or user_info.username or f"User {user_id}"
+        message_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        channel_message = f"💬 **Message** at {message_time}\n👤 From: {sender_name} (ID: {user_id}) to User ID: {partner_id}{reply_info}\n"
 
-    user_info = await bot.get_chat(user_id)
-    sender_name = user_info.first_name or user_info.username or f"User {user_id}"
-    message_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    channel_message = f"💬 **Message** at {message_time}\n👤 From: {sender_name} (ID: {user_id}) to User ID: {partner_id}{reply_info}\n"
-
-    max_retries = 3
-    for attempt in range(max_retries):
         try:
             forwarded_message = None
             if message.text:
@@ -1005,64 +804,70 @@ async def forward_messages(message: Message):
                 message_id_map[user_id][message.message_id] = forwarded_message.message_id
                 message_id_map[partner_id][forwarded_message.message_id] = message.message_id
                 print(f"📌 Mapped message ID {message.message_id} (user {user_id}) to {forwarded_message.message_id} (user {partner_id})")
-            break
-        except TelegramAPIError as e:
-            if "429" in str(e):  # Rate limit error
-                await asyncio.sleep(2 ** attempt * 2)  # Exponential backoff
-                continue
-            print(f"❌ Error forwarding message from {user_id} to {partner_id}, attempt {attempt + 1}: {e}")
-            if attempt == max_retries - 1:
-                await message.answer("⚠️ Unable to send your message due to a server issue. Please try again later or contact @Ask_and_feedback_bot.")
-                return
+            else:
+                print(f"⚠️ Could not map message ID for {user_id}: no valid forwarded_message")
+        except Exception as e:
+            print(f"❌ Error forwarding message from {user_id} to {partner_id}: {e}")
+            await message.answer("⚠️ Failed to send message. Please try again later.")
 
-    try:
-        await bot.send_message(
-            chat_id=CHANNEL_ID,
-            text=channel_message
+        try:
+            await bot.send_message(
+                chat_id=CHANNEL_ID,
+                text=channel_message
+            )
+            if message.photo:
+                await bot.send_photo(
+                    chat_id=CHANNEL_ID,
+                    photo=message.photo[-1].file_id,
+                    caption=message.caption or ""
+                )
+            elif message.document:
+                await bot.send_document(
+                    chat_id=CHANNEL_ID,
+                    document=message.document.file_id,
+                    caption=message.caption or ""
+                )
+            elif message.video:
+                await bot.send_video(
+                    chat_id=CHANNEL_ID,
+                    video=message.video.file_id,
+                    caption=message.caption or ""
+                )
+            elif message.audio:
+                await bot.send_audio(
+                    chat_id=CHANNEL_ID,
+                    audio=message.audio.file_id,
+                    caption=message.caption or ""
+                )
+            elif message.voice:
+                await bot.send_voice(
+                    chat_id=CHANNEL_ID,
+                    voice=message.voice.file_id,
+                    caption=message.caption or ""
+                )
+            elif message.video_note:
+                await bot.send_video_note(
+                    chat_id=CHANNEL_ID,
+                    video_note=message.video_note.file_id
+                )
+            elif message.sticker:
+                await bot.send_sticker(
+                    chat_id=CHANNEL_ID,
+                    sticker=message.sticker.file_id
+                )
+            print(f"📢 Message from user {user_id} to {partner_id} logged to channel {CHANNEL_ID}")
+        except Exception as e:
+            print(f"❌ Error logging message to channel {CHANNEL_ID}: {e}")
+    elif current_state == "searching":
+        await message.answer(
+            "🔍 You are already searching for a partner. Please wait.",
+            reply_markup=get_main_keyboard(state="searching")
         )
-        if message.photo:
-            await bot.send_photo(
-                chat_id=CHANNEL_ID,
-                photo=message.photo[-1].file_id,
-                caption=message.caption or ""
-            )
-        elif message.document:
-            await bot.send_document(
-                chat_id=CHANNEL_ID,
-                document=message.document.file_id,
-                caption=message.caption or ""
-            )
-        elif message.video:
-            await bot.send_video(
-                chat_id=CHANNEL_ID,
-                video=message.video.file_id,
-                caption=message.caption or ""
-            )
-        elif message.audio:
-            await bot.send_audio(
-                chat_id=CHANNEL_ID,
-                audio=message.audio.file_id,
-                caption=message.caption or ""
-            )
-        elif message.voice:
-            await bot.send_voice(
-                chat_id=CHANNEL_ID,
-                voice=message.voice.file_id,
-                caption=message.caption or ""
-            )
-        elif message.video_note:
-            await bot.send_video_note(
-                chat_id=CHANNEL_ID,
-                video_note=message.video_note.file_id
-            )
-        elif message.sticker:
-            await bot.send_sticker(
-                chat_id=CHANNEL_ID,
-                sticker=message.sticker.file_id
-            )
-        print(f"📢 Message from user {user_id} to {partner_id} logged to channel {CHANNEL_ID}")
-    except Exception as e:
-        print(f"❌ Error logging message to channel {CHANNEL_ID}: {e}")
+    else:
+        await message.answer(
+            "⚠️ You are not currently chatting with anyone. Press 'Begin' to find a partner.",
+            reply_markup=get_main_keyboard(state="idle")
+        )
 
 # Ignore group messages
 @router.message(F.chat.type.in_({"group", "supergroup"}))
@@ -1115,7 +920,6 @@ async def handle_age_selection(callback: CallbackQuery):
         if user_id not in user_data:
             user_data[user_id] = {}
         user_data[user_id]["age"] = selected_age
-        user_data[user_id]["last_active"] = datetime.datetime.now()  # Update last_active
         update_user_data_now(user_id)
     await callback.answer(text=f"Your age is {selected_age}", show_alert=True)
     if user_id in waiting_users and is_setup_complete(user_id)[0]:
@@ -1130,7 +934,6 @@ async def handle_gender_selection(callback: CallbackQuery):
         if user_id not in user_data:
             user_data[user_id] = {}
         user_data[user_id]["gender"] = selected_gender
-        user_data[user_id]["last_active"] = datetime.datetime.now()  # Update last_active
         update_user_data_now(user_id)
     await callback.answer(text=f"You selected {selected_gender}", show_alert=True)
     if user_id in waiting_users and is_setup_complete(user_id)[0]:
@@ -1145,7 +948,6 @@ async def handle_religion_selection(callback: CallbackQuery):
         if user_id not in user_data:
             user_data[user_id] = {}
         user_data[user_id]["religion"] = selected_religion
-        user_data[user_id]["last_active"] = datetime.datetime.now()  # Update last_active
         update_user_data_now(user_id)
     selected_age = user_data[user_id].get("age", "Not set")
     selected_gender = user_data[user_id].get("gender", "Not set")
@@ -1186,7 +988,6 @@ async def handle_partner_maximum_age(callback: CallbackQuery):
         if "partner" not in user_data[user_id]:
             user_data[user_id]["partner"] = {}
         user_data[user_id]["partner"]["min_age"] = min_age
-        user_data[user_id]["last_active"] = datetime.datetime.now()  # Update last_active
         update_user_data_now(user_id)
     if user_id in waiting_users and is_setup_complete(user_id)[0]:
         await attempt_match(user_id)
@@ -1224,7 +1025,6 @@ async def handle_partner_age_range(callback: CallbackQuery):
             )
             return
         user_data[user_id]["partner"]["max_age"] = max_age
-        user_data[user_id]["last_active"] = datetime.datetime.now()  # Update last_active
         update_user_data_now(user_id)
     await callback.answer(text=f"🎉 Partner age range set: from {min_age} to {max_age}", show_alert=True)
     if user_id in waiting_users and is_setup_complete(user_id)[0]:
@@ -1253,7 +1053,6 @@ async def handle_partner_gender_selection(callback: CallbackQuery):
         if "partner" not in user_data[user_id]:
             user_data[user_id]["partner"] = {}
         user_data[user_id]["partner"]["gender"] = selected_gender
-        user_data[user_id]["last_active"] = datetime.datetime.now()  # Update last_active
         update_user_data_now(user_id)
     await callback.answer(text=f"🎉 Partner gender set to: {selected_gender.capitalize()}", show_alert=True)
     if user_id in waiting_users and is_setup_complete(user_id)[0]:
@@ -1284,7 +1083,6 @@ async def handle_partner_religion_selection(callback: CallbackQuery):
         if "partner" not in user_data[user_id]:
             user_data[user_id]["partner"] = {}
         user_data[user_id]["partner"]["religion"] = selected_partner_religion
-        user_data[user_id]["last_active"] = datetime.datetime.now()  # Update last_active
         update_user_data_now(user_id)
     partner_min_age = user_data[user_id]["partner"].get("min_age", "Not set")
     partner_max_age = user_data[user_id]["partner"].get("max_age", "Not set")
@@ -1375,121 +1173,8 @@ async def periodic_match_check():
             print(f"🔄 Checking for matches among {len(waiting_users)} waiting users")
             await try_match_queued_users()
 
-# Check for long wait times
-async def check_waiting_timeouts():
-    while True:
-        await asyncio.sleep(60)
-        now = datetime.datetime.now()
-        async with waiting_users_lock:
-            for user_id in list(waiting_users):
-                wait_time = (now - waiting_start_times.get(user_id, now)).total_seconds() / 60
-                if wait_time > 10:  # Assuming 10 minutes timeout
-                    waiting_users.discard(user_id)
-                    waiting_start_times.pop(user_id, None)
-                    update_user_data_now(user_id)
-                    try:
-                        await bot.send_message(
-                            chat_id=user_id,
-                            text="⏳ You've been waiting too long without a match. Try broadening your preferences or press 'Begin' to search again.",
-                            reply_markup=get_main_keyboard(state="idle")
-                        )
-                        print(f"📢 Notified user {user_id} of long wait time")
-                    except TelegramAPIError as e:
-                        print(f"❌ Failed to notify user {user_id} of wait timeout: {e}")
-        await try_match_queued_users()
-
-# Cleanup inactive users
-async def cleanup_inactive_users():
-    while True:
-        await asyncio.sleep(3600)  # Run hourly
-        async with user_data_lock, active_matches_lock, waiting_users_lock:
-            now = datetime.datetime.now()
-            inactive_threshold = now - datetime.timedelta(days=30)
-            users_to_remove = [
-                user_id for user_id, data in user_data.items()
-                if data.get("last_active", now) < inactive_threshold
-                and user_id not in active_matches
-                and user_id not in waiting_users
-            ]
-            for user_id in users_to_remove:
-                user_data.pop(user_id, None)
-                try:
-                    await users_collection.delete_one({"_id": user_id})
-                    print(f"🧹 Removed inactive user {user_id} from MongoDB")
-                except Exception as e:
-                    print(f"❌ Failed to remove user {user_id}: {e}")
-            print(f"🧹 Cleaned up {len(users_to_remove)} inactive users")
-
-# Instance locking functions
-async def acquire_instance_lock(attempt=0, max_attempts=5):
-    if attempt >= max_attempts:
-        raise Exception("Failed to acquire lock after maximum retries")
-    lock_id = str(uuid4())
-    now = datetime.datetime.now()
-    staleness_threshold = now - datetime.timedelta(minutes=15)
-    try:
-        result = await db['instance_locks'].find_one_and_update(
-            {"_id": "bot_instance"},
-            {
-                "$set": {
-                    "lock_id": lock_id,
-                    "created_at": now
-                }
-            },
-            upsert=True,
-            return_document=ReturnDocument.AFTER
-        )
-        if result and result.get("lock_id") == lock_id:
-            print(f"🔒 Acquired instance lock with ID {lock_id}")
-            return lock_id
-        else:
-            await asyncio.sleep(2 ** attempt)
-            return await acquire_instance_lock(attempt + 1, max_attempts)
-    except pymongo.errors.DuplicateKeyError:
-        existing_lock = await db['instance_locks'].find_one({"_id": "bot_instance"})
-        if existing_lock and existing_lock.get("created_at", now) < staleness_threshold:
-            print("🧹 Removing stale lock")
-            await db['instance_locks'].delete_one({"_id": "bot_instance"})
-            return await acquire_instance_lock(attempt + 1, max_attempts)
-        print(f"❌ Failed to acquire instance lock: Valid lock exists: {existing_lock}")
-        raise Exception("Another bot instance is running")
-    except Exception as e:
-        print(f"❌ Failed to acquire instance lock: {e}")
-        raise
-
-async def keep_lock_alive(lock_id):
-    while True:
-        await asyncio.sleep(300)  # 5 minutes
-        try:
-            now = datetime.datetime.now()
-            result = await db['instance_locks'].update_one(
-                {"_id": "bot_instance", "lock_id": lock_id},
-                {"$set": {"created_at": now}}
-            )
-            if result.matched_count == 0:
-                print("⚠️ Lock no longer held, stopping keep-alive")
-                break
-        except Exception as e:
-            print(f"❌ Failed to update lock: {e}")
-
-async def release_instance_lock(lock_id):
-    try:
-        await db['instance_locks'].delete_one({"_id": "bot_instance", "lock_id": lock_id})
-        print(f"🔓 Released instance lock with ID {lock_id}")
-    except Exception as e:
-        print(f"❌ Failed to release instance lock: {e}")
-
 # Main function
 async def main():
-    lock_id = None
-    keep_lock_task = None
-    try:
-        lock_id = await acquire_instance_lock()
-        keep_lock_task = asyncio.create_task(keep_lock_alive(lock_id))
-    except Exception as e:
-        print(f"❌ Failed to acquire instance lock: {e}")
-        raise
-
     await load_user_data()
     print("🤖 Bot is running...")
     print("💾 Individual data points will be saved immediately upon changes")
@@ -1499,32 +1184,22 @@ async def main():
     periodic_save_task = asyncio.create_task(periodic_save())
     periodic_match_task = asyncio.create_task(periodic_match_check())
     cleanup_task = asyncio.create_task(cleanup_cooldown_tracker())
-    waiting_timeout_task = asyncio.create_task(check_waiting_timeouts())
-    cleanup_inactive_task = asyncio.create_task(cleanup_inactive_users())
     try:
         async with bot:
             await dp.start_polling(bot)
     except KeyboardInterrupt:
         await save_user_data()
         print("💾 Final save completed before shutdown")
-    except Exception as e:
-        print(f"❌ Unexpected error in main: {e}")
-        await save_user_data()
-        raise
     finally:
-        tasks = [periodic_save_task, periodic_match_task, cleanup_task, waiting_timeout_task, cleanup_inactive_task, keep_lock_task]
-        for task in tasks:
-            task.cancel()
+        periodic_save_task.cancel()
+        periodic_match_task.cancel()
+        cleanup_task.cancel()
         try:
-            await asyncio.gather(*tasks)
+            await periodic_save_task
+            await periodic_match_task
+            await cleanup_task
         except asyncio.CancelledError:
             pass
-        except Exception as e:
-            print(f"❌ Error during task cleanup: {e}")
-        if lock_id:
-            await release_instance_lock(lock_id)
-        client.close()
-        print("💾 MongoDB client closed")
         print("👋 Bot has been gracefully shut down")
 
 if __name__ == "__main__":
