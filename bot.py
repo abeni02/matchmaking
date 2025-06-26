@@ -193,6 +193,14 @@ async def update_user_data(user_id):
 def update_user_data_now(user_id):
     asyncio.create_task(update_user_data(user_id))
 
+# Helper function to check if a user is a group member
+async def is_group_member(user_id: int) -> bool:
+    try:
+        member = await bot.get_chat_member(chat_id=GROUP_ID, user_id=user_id)
+        return member.status not in ['left', 'kicked']
+    except Exception as e:
+        print(f"Error checking group membership for user {user_id}: {e}")
+        return False
 
 
 # Function to send join group message
