@@ -889,7 +889,7 @@ async def handle_chat_member_update(update: ChatMemberUpdated):
             # Send sticker to group (using a default Telegram sticker)
             await bot.send_sticker(
                 chat_id=GROUP_ID,
-                sticker="CAACAgIAAxkBAAIBImZ2Z5YAAX1GAAH2XAAByT8AAW4bAAJaBAACX3vhS8Ay2eQ1R7FXNQQ"
+                sticker="CAACAgEAAxkBAAE5E-xok7FWOS3t3jQUWxT3_Yw8QGgkNQACSQQAAmGwwEehsx6rufaXijYE"
             )
             # Log to channel
             removal_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
