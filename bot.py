@@ -8,7 +8,7 @@ from aiogram.types import (
     KeyboardButton,
     BotCommand,
     BotCommandScopeAllPrivateChats,
-    BotCommandScopeAllGroupChats
+    BotCommandScopeAllGroupChats,
     ChatMemberUpdated
 )
 import asyncio
