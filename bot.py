@@ -869,7 +869,64 @@ async def forward_messages(message: Message):
             "⚠️ You are not currently chatting with anyone. Press 'Begin' to find a partner.",
             reply_markup=get_main_keyboard(state="idle")
         )
-
+# Handle chat member updates to detect user removal by admin
+@router.chat_member(F.chat.id == int(GROUP_ID))
+async def handle_chat_member_update(update: ChatMemberUpdated):
+    old_status = update.old_chat_member.status
+    new_status = update.new_chat_member.status
+    user_id = update.from_user.id
+    user_info = await bot.get_chat(user_id)
+    user_name = user_info.username or user_info.first_name or f"User {user_id}"
+    
+    # Check if user was kicked or banned
+    if old_status in ['member', 'administrator', 'creator'] and new_status in ['kicked', 'left']:
+        try:
+            # Send message to group
+            await bot.send_message(
+                chat_id=GROUP_ID,
+                text=f"user [{user_name}], {user_name} is eliminated due to unsupported behaviour."
+            )
+            # Send sticker to group (using a default Telegram sticker)
+            await bot.send_sticker(
+                chat_id=GROUP_ID,
+                sticker="CAACAgIAAxkBAAIBImZ2Z5YAAX1GAAH2XAAByT8AAW4bAAJaBAACX3vhS8Ay2eQ1R7FXNQQ"
+            )
+            # Log to channel
+            removal_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            channel_message = (
+                f"🚫 **User Removed** at {removal_time}\n"
+                f"👤 User: {user_name} (ID: {user_id})\n"
+                f"📝 Reason: Eliminated due to unsupported behaviour"
+            )
+            await bot.send_message(
+                chat_id=CHANNEL_ID,
+                text=channel_message
+            )
+            # Clean up user data
+            async with active_matches_lock, waiting_users_lock, user_data_lock, cooldown_tracker_lock:
+                if user_id in active_matches:
+                    partner_id = active_matches.pop(user_id, None)
+                    active_matches.pop(partner_id, None)
+                    message_id_map.pop(user_id, None)
+                    message_id_map.pop(partner_id, None)
+                    if partner_id:
+                        await bot.send_message(
+                            chat_id=partner_id,
+                            text="❌ Your partner has been removed from the group. You can press 'Begin' to find a new partner.",
+                            reply_markup=get_main_keyboard(state="idle")
+                        )
+                        update_user_data_now(partner_id)
+                if user_id in waiting_users:
+                    waiting_users.discard(user_id)
+                    waiting_start_times.pop(user_id, None)
+                if user_id in user_data:
+                    del user_data[user_id]
+                if user_id in cooldown_tracker:
+                    del cooldown_tracker[user_id]
+                update_user_data_now(user_id)  # Ensure user data is removed from MongoDB
+            print(f"🚫 User {user_name} (ID: {user_id}) removed from group and data cleaned up")
+        except Exception as e:
+            print(f"❌ Error handling user {user_id} removal: {e}")
 # Ignore group messages
 @router.message(F.chat.type.in_({"group", "supergroup"}))
 async def ignore_group_messages(_message: Message):
