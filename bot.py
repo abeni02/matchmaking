@@ -877,26 +877,49 @@ async def handle_chat_member_update(update: ChatMemberUpdated):
     new_status = update.new_chat_member.status
     user = update.new_chat_member.user  # Get the user whose status changed (the removed user)
     user_id = user.id
-    first_name = user.first_name or f"User {user_id}"
-    username = f"@{user.username}" if user.username else ""
+    first_name = user.first_name or f"User {user_id}"  # Use first name, fallback to User {user_id}
+    username = f"@{user.username}" if user.username else ""  # Include @username if available
     
-    # Check if user was kicked or banned
-    if old_status in ['member', 'administrator', 'creator'] and new_status in ['kicked', 'left']:
+    # Debug logging to confirm update details
+    print(f"Received chat member update: user_id={user_id}, first_name={first_name}, username={username}, old_status={old_status}, new_status={new_status}")
+
+    # Check if user was kicked or banned (exclude bot or admin self-actions)
+    if old_status in ['member', 'administrator', 'creator'] and new_status in ['kicked', 'left'] and not user.is_bot:
         try:
-            # Format the message: include username if available, else just first name
+            # Format the message: first_name (@username) if username exists, else just first_name
             message_text = f"{first_name} {username} is eliminated due to unsupported behaviour.".strip()
-            # Send message to group
+            # Prepare message entities for clickable name/username
+            entities = []
+            name_length = len(first_name)
+            if username:
+                # If username exists, make it a clickable mention
+                entities.append({
+                    "type": "mention",
+                    "offset": name_length + 1,  # After first_name and space
+                    "length": len(username)
+                })
+            else:
+                # If no username, make first_name a clickable text_mention
+                entities.append({
+                    "type": "text_mention",
+                    "offset": 0,
+                    "length": name_length,
+                    "user": user
+                })
+            
+            # Send message to group with entities
             await bot.send_message(
                 chat_id=GROUP_ID,
-                text=message_text
+                text=message_text,
+                entities=entities
             )
             # Send sticker to group (using a default Telegram sticker)
             await bot.send_sticker(
                 chat_id=GROUP_ID,
-                sticker="CAACAgEAAxkBAAE5E-xok7FWOS3t3jQUWxT3_Yw8QGgkNQACSQQAAmGwwEehsx6rufaXijYE"
+                sticker="CAACAgIAAxkBAAIBImZ2Z5YAAX1GAAH2XAAByT8AAW4bAAJaBAACX3vhS8Ay2eQ1R7FXNQQ"
             )
-            # Log to channel
-            removal_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            # Log to channel (plain text, no entities needed)
+            removal_time = datetime.datetime.now(pytz.timezone('Africa/Nairobi')).strftime("%Y-%m-%d %H:%M:%S")
             channel_message = (
                 f"🚫 **User Removed** at {removal_time}\n"
                 f"👤 User: {first_name} {username} (ID: {user_id})\n"
