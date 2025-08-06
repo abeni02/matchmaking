@@ -9,6 +9,7 @@ from aiogram.types import (
     BotCommand,
     BotCommandScopeAllPrivateChats,
     BotCommandScopeAllGroupChats
+    ChatMemberUpdated
 )
 import asyncio
 import os
