@@ -928,11 +928,6 @@ async def handle_chat_member_update(update: ChatMemberUpdated):
             print(f"🚫 User {user_name} (ID: {user_id}) removed from group and data cleaned up")
         except Exception as e:
             print(f"❌ Error handling user {user_id} removal: {e}")
-# Ignore group messages
-@router.message(F.chat.type.in_({"group", "supergroup"}))
-async def ignore_group_messages(_message: Message):
-    pass
-
 # Callback query handlers
 @router.callback_query(F.data == "age")
 async def handle_age(callback: CallbackQuery):
@@ -1245,7 +1240,7 @@ async def main():
     cleanup_task = asyncio.create_task(cleanup_cooldown_tracker())
     try:
         async with bot:
-            await dp.start_polling(bot)
+            await dp.start_polling(bot, allowed_updates=['message', 'callback_query', 'chat_member'])
     except KeyboardInterrupt:
         await save_user_data()
         print("💾 Final save completed before shutdown")
