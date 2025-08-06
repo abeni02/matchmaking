@@ -906,18 +906,18 @@ async def handle_chat_member_update(update: ChatMemberUpdated):
                     "length": name_length,
                     "user": user
                 })
-            
+             # Send sticker to group (using a default Telegram sticker)
+            await bot.send_sticker(
+                chat_id=GROUP_ID,
+                sticker="CAACAgEAAxkBAAE5E-xok7FWOS3t3jQUWxT3_Yw8QGgkNQACSQQAAmGwwEehsx6rufaXijYE"
+            )
             # Send message to group with entities
             await bot.send_message(
                 chat_id=GROUP_ID,
                 text=message_text,
                 entities=entities
             )
-            # Send sticker to group (using a default Telegram sticker)
-            await bot.send_sticker(
-                chat_id=GROUP_ID,
-                sticker="CAACAgIAAxkBAAIBImZ2Z5YAAX1GAAH2XAAByT8AAW4bAAJaBAACX3vhS8Ay2eQ1R7FXNQQ"
-            )
+           
             # Log to channel (plain text, no entities needed)
             removal_time = datetime.datetime.now(pytz.timezone('Africa/Nairobi')).strftime("%Y-%m-%d %H:%M:%S")
             channel_message = (
