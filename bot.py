@@ -871,32 +871,34 @@ async def forward_messages(message: Message):
             reply_markup=get_main_keyboard(state="idle")
         )
 # Handle chat member updates to detect user removal by admin
+# Handle chat member updates to detect user removal by admin
 @router.chat_member(F.chat.id == int(GROUP_ID))
 async def handle_chat_member_update(update: ChatMemberUpdated):
     old_status = update.old_chat_member.status
     new_status = update.new_chat_member.status
     user_id = update.from_user.id
     user_info = await bot.get_chat(user_id)
-    user_name = user_info.username or user_info.first_name or f"User {user_id}"
+    # Determine display name: username (with @) if available, else first name, else User {user_id}
+    display_name = f"@{user_info.username}" if user_info.username else user_info.first_name or f"User {user_id}"
     
     # Check if user was kicked or banned
     if old_status in ['member', 'administrator', 'creator'] and new_status in ['kicked', 'left']:
         try:
-            # Send message to group
+            # Send message to group with simplified format
             await bot.send_message(
                 chat_id=GROUP_ID,
-                text=f"user [{user_name}], {user_name} is eliminated due to unsupported behaviour."
+                text=f"{display_name} is eliminated due to unsupported behaviour."
             )
             # Send sticker to group (using a default Telegram sticker)
             await bot.send_sticker(
                 chat_id=GROUP_ID,
-                sticker="CAACAgEAAxkBAAE5E-xok7FWOS3t3jQUWxT3_Yw8QGgkNQACSQQAAmGwwEehsx6rufaXijYE"
+                sticker="CAACAgIAAxkBAAIBImZ2Z5YAAX1GAAH2XAAByT8AAW4bAAJaBAACX3vhS8Ay2eQ1R7FXNQQ"
             )
             # Log to channel
             removal_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             channel_message = (
                 f"🚫 **User Removed** at {removal_time}\n"
-                f"👤 User: {user_name} (ID: {user_id})\n"
+                f"👤 User: {display_name} (ID: {user_id})\n"
                 f"📝 Reason: Eliminated due to unsupported behaviour"
             )
             await bot.send_message(
@@ -925,7 +927,7 @@ async def handle_chat_member_update(update: ChatMemberUpdated):
                 if user_id in cooldown_tracker:
                     del cooldown_tracker[user_id]
                 update_user_data_now(user_id)  # Ensure user data is removed from MongoDB
-            print(f"🚫 User {user_name} (ID: {user_id}) removed from group and data cleaned up")
+            print(f"🚫 User {display_name} (ID: {user_id}) removed from group and data cleaned up")
         except Exception as e:
             print(f"❌ Error handling user {user_id} removal: {e}")
 # Callback query handlers
