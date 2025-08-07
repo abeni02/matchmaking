@@ -888,7 +888,7 @@ async def handle_chat_member_update(update: ChatMemberUpdated):
         try:
             # Format the message: first_name (@username) if username exists, else just first_name
             message_text = f"{first_name} {username} is eliminated due to unsupported behaviour.".strip()
-            message_text_am = f"{first_name} {username} ተገቢ ባልሆነ ባህሪ ምክንያት ተወግዷል።".strip()
+            message_text = f"{first_name} {username} ተገቢ ባልሆነ ባህሪ ምክንያት ተወግዷል።".strip()
             # Prepare message entities for clickable name/username
             entities = []
             name_length = len(first_name)
