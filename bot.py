@@ -870,7 +870,6 @@ async def forward_messages(message: Message):
             "⚠️ You are not currently chatting with anyone. Press 'Begin' to find a partner.",
             reply_markup=get_main_keyboard(state="idle")
         )
-# Handle chat member updates to detect user removal by admin
 @router.chat_member(F.chat.id == int(GROUP_ID))
 async def handle_chat_member_update(update: ChatMemberUpdated):
     old_status = update.old_chat_member.status
@@ -887,47 +886,33 @@ async def handle_chat_member_update(update: ChatMemberUpdated):
     if old_status in ['member', 'administrator', 'creator'] and new_status == 'kicked' and not user.is_bot:
         try:
             # Format elimination messages with first_name and username (no clickable entities)
-        message_text_en = f"{first_name} {username} is eliminated due to unsupported behaviour.".strip()
-        message_text_am = f"{first_name} {username} ተገቢ ባልሆነ ባህሪ ምክንያት ተወግዷል።".strip()
-            # Prepare message entities for clickable name/username
-            entities = []
-            name_length = len(first_name)
-            if username:
-                # If username exists, make it a clickable mention
-                entities.append({
-                    "type": "mention",
-                    "offset": name_length + 1,  # After first_name and space
-                    "length": len(username)
-                })
-            else:
-                # If no username, make first_name a clickable text_mention
-                entities.append({
-                    "type": "text_mention",
-                    "offset": 0,
-                    "length": name_length,
-                    "user": user
-                })
-            # Send sticker to group (using a default Telegram sticker)
+            message_text_en = f"{first_name} {username} is eliminated due to unsupported behaviour.".strip()
+            message_text_am = f"{first_name} {username} ተገቢ ባልሆነ ባህሪ ምክንያት ተወግዷል።".strip()
+
+            # Send sticker to group
             await bot.send_sticker(
                 chat_id=GROUP_ID,
                 sticker="CAACAgEAAxkBAAE5E-xok7FWOS3t3jQUWxT3_Yw8QGgkNQACSQQAAmGwwEehsx6rufaXijYE"
             )
-          # Send elimination messages to group in both languages (no entities to keep name non-clickable)
-        await bot.send_message(
-            chat_id=GROUP_ID,
-            text=message_text_en
-        )
-        await bot.send_message(
-            chat_id=GROUP_ID,
-            text=message_text_am
-        )
-           
-            # Log to channel (plain text, no entities needed)
+            # Send elimination messages to group in both languages (no entities to keep name non-clickable)
+            await bot.send_message(
+                chat_id=GROUP_ID,
+                text=message_text_en
+            )
+            await bot.send_message(
+                chat_id=GROUP_ID,
+                text=message_text_am
+            )
+            
+            # Log to channel in both languages (plain text, no entities needed)
             removal_time = datetime.datetime.now(pytz.timezone('Africa/Nairobi')).strftime("%Y-%m-%d %H:%M:%S")
             channel_message = (
                 f"🚫 **User Removed** at {removal_time}\n"
                 f"👤 User: {first_name} {username} (ID: {user_id})\n"
-                f"📝 Reason: Eliminated due to unsupported behaviour"
+                f"📝 Reason: Eliminated due to unsupported behaviour\n\n"
+                f"🚫 **ተጠቃሚ ተወግዷል** በ {removal_time}\n"
+                f"👤 ተጠቃሚ: {first_name} {username} (መለያ: {user_id})\n"
+                f"📝 ምክንያት: ተገቢ ባልሆኮ ባህሪ ምክንያት ተወግዷል"
             )
             await bot.send_message(
                 chat_id=CHANNEL_ID,
@@ -961,6 +946,21 @@ async def handle_chat_member_update(update: ChatMemberUpdated):
     elif old_status in ['member', 'administrator', 'creator'] and new_status == 'left' and not user.is_bot:
         # Handle voluntary leave (clean up data without sending elimination message)
         try:
+            # Log to channel in both languages (plain text, no entities needed)
+            leave_time = datetime.datetime.now(pytz.timezone('Africa/Nairobi')).strftime("%Y-%m-%d %H:%M:%S")
+            channel_message = (
+                f"🟡 **User Left** at {leave_time}\n"
+                f"👤 User: {first_name} {username} (ID: {user_id})\n"
+                f"📝 Status: Left the group voluntarily\n\n"
+                f"🟡 **ተጠቃሚ ወጥቷል** በ {leave_time}\n"
+                f"👤 ተጠቃሚ: {first_name} {username} (መለያ: {user_id})\n"
+                f"📝 ሁኔታ: በፈቃዱ ከቡድኑ ወጥቷል"
+            )
+            await bot.send_message(
+                chat_id=CHANNEL_ID,
+                text=channel_message
+            )
+            # Clean up user data
             async with active_matches_lock, waiting_users_lock, user_data_lock, cooldown_tracker_lock:
                 if user_id in active_matches:
                     partner_id = active_matches.pop(user_id, None)
@@ -982,7 +982,7 @@ async def handle_chat_member_update(update: ChatMemberUpdated):
                 if user_id in cooldown_tracker:
                     del cooldown_tracker[user_id]
                 update_user_data_now(user_id)  # Ensure user data is removed from MongoDB
-            print(f"👋 User {first_name} {username} (ID: {user_id}) left the group voluntarily and data cleaned up")
+            print(f"🟡 User {first_name} {username} (ID: {user_id}) left the group voluntarily and data cleaned up")
         except Exception as e:
             print(f"❌ Error handling user {user_id} voluntary leave: {e}")
 # Callback query handlers
