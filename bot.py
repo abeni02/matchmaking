@@ -886,44 +886,50 @@ async def handle_chat_member_update(update: ChatMemberUpdated):
     # Prepare message entities for clickable name/username
     entities_en = []
     entities_am = []
-    name_length = len(first_name)
+    # Calculate offsets for entities based on message structure
+    welcome_prefix_en = "🎉 Welcome "
+    welcome_prefix_am = "🎉 እኳን ደህና መጡ "
     if username:
-        # If username exists, make it a clickable mention
+        # If username exists, make only the username clickable
+        offset_en = len(welcome_prefix_en) + len(first_name) + 1  # After "Welcome " and "first_name "
+        offset_am = len(welcome_prefix_am) + len(first_name) + 1  # After "እኳን ደህና መጡ " and "first_name "
         entities_en.append({
             "type": "mention",
-            "offset": name_length + 1,  # After first_name and space
+            "offset": offset_en,
             "length": len(username)
         })
         entities_am.append({
             "type": "mention",
-            "offset": name_length + 1,  # After first_name and space
+            "offset": offset_am,
             "length": len(username)
         })
     else:
-        # If no username, make first_name a clickable text_mention
+        # If no username, make only the first_name clickable
+        offset_en = len(welcome_prefix_en)  # After "Welcome "
+        offset_am = len(welcome_prefix_am)  # After "እኳን ደህና መጡ "
         entities_en.append({
             "type": "text_mention",
-            "offset": 0,
-            "length": name_length,
+            "offset": offset_en,
+            "length": len(first_name),
             "user": user
         })
         entities_am.append({
             "type": "text_mention",
-            "offset": 0,
-            "length": name_length,
+            "offset": offset_am,
+            "length": len(first_name),
             "user": user
         })
 
     # Bot usage rules in English and Amharic with danger emoji
     rules_en = (
         "⚠️ **Bot Usage Rules** ⚠️\n"
-        "⚠️ 1. **No Links Allowed**: Sending any type of link is strictly prohibited.\n"
-        "⚠️ 2. **No Sexual Content**: It is highly forbidden to share or request any sexually related content."
+        " 1. **No Links Allowed**: Sending any type of link is strictly prohibited.\n"
+        " 2. **No Sexual Content**: It is highly forbidden to share or request any sexually related content."
     )
     rules_am = (
         "⚠️ **የቦት አጠቃቀም መመሪያዎች** ⚠️\n"
-        "⚠️ 1. **ምንም አይነት ሊንክ መላክ አይፈቀድም**፡ ማንኛውም አይነት ሊንክ መላክ በጥብቅ የተከለከለ ነው።\n"
-        "⚠️ 2. **ወሲባዊ ይዘቶችን ማጋራት በጥብቅ የተከለከል ነው**፡ ማንኛውንም የወሲብ ይዘት ያላቸው ነገሮችን ማጋራትም ሆነ መጠየቅ በጥብቅ የተከለከለ ነው።"
+        " 1. **ምንም አይነት ሊንክ መላክ አይፈቀድም**፡ ማንኛውም አይነት ሊንክ መላክ በጥብቅ የተከለከለ ነው።\n"
+        " 2. **ወሲባዊ ይዘቶችን ማጋራት በጥብቅ የተከለከል ነው**፡ ማንኛውንም የወሲብ ይዘት ያላቸው ነገሮችን ማጋራትም ሆነ መጠየቅ በጥብቅ የተከለከለ ነው።"
     )
 
     # Check if user was added to the group
@@ -931,7 +937,7 @@ async def handle_chat_member_update(update: ChatMemberUpdated):
         try:
             # Format welcome messages in English and Amharic
             message_text_en = f"🎉 Welcome {first_name} {username} to the group!".strip()
-            message_text_am = f"🎉 እንኳን ደህና መጡ {first_name} {username} !".strip()
+            message_text_am = f"🎉 እኳን ደህና መጡ {first_name} {username} ወደ ቡድኑ!".strip()
 
             # Send sticker to group
             await bot.send_sticker(
