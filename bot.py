@@ -900,7 +900,7 @@ async def handle_chat_member_update(update: ChatMemberUpdated):
         try:
             # Format welcome messages with first_name only (no username, no clickable entities)
             message_text_en = f"🎉 Welcome {first_name} to the group!".strip()
-            message_text_am = f"🎉 እኳን ደህና መጡ {first_name} ወደ ቡ�5ኑ!".strip()
+            message_text_am = f"🎉 እኳን ደህና መጡ {first_name} ወደ ቡድኑ!".strip()
 
             # Debug message text
             print(f"Sending welcome messages: en='{message_text_en}', am='{message_text_am}'")
@@ -937,7 +937,7 @@ async def handle_chat_member_update(update: ChatMemberUpdated):
                 f"📝 Status: Added to the group\n\n"
                 f"🟢 **ተጠቃሚ ተቀላቅሏል** በ {join_time}\n"
                 f"👤 ተጠቃሚ: {first_name} {username} (መለያ: {user_id})\n"
-                f"📝 ሁኔታ: ወደ ቡ�5ኑ ተጨምሯል"
+                f"📝 ሁኔታ: ወደ ቡድኑ ተጨምሯል"
             )
             await bot.send_message(
                 chat_id=CHANNEL_ID,
@@ -947,7 +947,7 @@ async def handle_chat_member_update(update: ChatMemberUpdated):
         except Exception as e:
             print(f"❌ Error handling user {user_id} addition: {e}")
 
-7    # Check if user was kicked or banned by an admin (exclude bot or admin self-actions)
+    # Check if user was kicked or banned by an admin (exclude bot or admin self-actions)
     elif old_status in ['member', 'administrator', 'creator'] and new_status == 'kicked' and not user.is_bot:
         try:
             # Format elimination messages with first_name only (no username, no clickable entities)
