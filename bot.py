@@ -891,8 +891,8 @@ async def handle_chat_member_update(update: ChatMemberUpdated):
     welcome_prefix_am = "🎉 እኳን ደህና መጡ "
     if username:
         # If username exists, make only the username clickable
-        offset_en = len(welcome_prefix_en) + len(first_name) + 1  # After "Welcome " and "first_name "
-        offset_am = len(welcome_prefix_am) + len(first_name) + 1  # After "እኳን ደህና መጡ " and "first_name "
+        offset_en = len(welcome_prefix_en) + len(first_name)  # After "Welcome " and "first_name"
+        offset_am = len(welcome_prefix_am) + len(first_name)  # After "እኳን ደህና መጡ " and "first_name"
         entities_en.append({
             "type": "mention",
             "offset": offset_en,
@@ -903,6 +903,7 @@ async def handle_chat_member_update(update: ChatMemberUpdated):
             "offset": offset_am,
             "length": len(username)
         })
+        print(f"Entities for user with username: offset_en={offset_en}, length={len(username)}, offset_am={offset_am}, message_en='🎉 Welcome {first_name}{username} to the group!'")
     else:
         # If no username, make only the first_name clickable
         offset_en = len(welcome_prefix_en)  # After "Welcome "
@@ -919,25 +920,29 @@ async def handle_chat_member_update(update: ChatMemberUpdated):
             "length": len(first_name),
             "user": user
         })
+        print(f"Entities for user without username: offset_en={offset_en}, length={len(first_name)}, offset_am={offset_am}, message_en='🎉 Welcome {first_name} to the group!'")
 
     # Bot usage rules in English and Amharic with danger emoji
     rules_en = (
-        "⚠️ **Bot Usage Rules** ⚠️\n"
-        " 1. **No Links Allowed**: Sending any type of link is strictly prohibited.\n"
-        " 2. **No Sexual Content**: It is highly forbidden to share or request any sexually related content."
+        "⚠️ Bot Usage Rules ⚠️\n"
+        "1. No Links Allowed: Sending any type of link is strictly prohibited.\n"
+        "2. No Sexual Content: It is highly forbidden to share or request any sexually related content."
     )
     rules_am = (
-        "⚠️ **የቦት አጠቃቀም መመሪያዎች** ⚠️\n"
-        " 1. **ምንም አይነት ሊንክ መላክ አይፈቀድም**፡ ማንኛውም አይነት ሊንክ መላክ በጥብቅ የተከለከለ ነው።\n"
-        " 2. **ወሲባዊ ይዘቶችን ማጋራት በጥብቅ የተከለከል ነው**፡ ማንኛውንም የወሲብ ይዘት ያላቸው ነገሮችን ማጋራትም ሆነ መጠየቅ በጥብቅ የተከለከለ ነው።"
+        "⚠️ የቦት አጠቃቀም መመሪያዎች ⚠️\n"
+        "1. ምንም አይነት ሊንክ መላክ አይፈቀድም፡ ማንኛውም አይነት ሊንክ መላክ በጥብቅ የተከለከለ ነው።\n"
+        "2. ወሲባዊ ይዘቶችን ማጋራት በጥብቅ የተከለከል ነው፡ ማንኛውንም የወሲብ ይዘት ያላቸው ነገሮችን ማጋራትም ሆነ መጠየቅ በጥብቅ የተከለከለ ነው።"
     )
 
     # Check if user was added to the group
     if old_status in ['left', 'kicked'] and new_status == 'member' and not user.is_bot:
         try:
             # Format welcome messages in English and Amharic
-            message_text_en = f"🎉 Welcome {first_name} {username} to the group!".strip()
-            message_text_am = f"🎉 እኳን ደህና መጡ {first_name} {username} ወደ ቡድኑ!".strip()
+            message_text_en = f"🎉 Welcome {first_name}{username} to the group!".strip()
+            message_text_am = f"🎉 እኳን ደህና መጡ {first_name}{username} ወደ ቡድኑ!".strip()
+
+            # Debug message text
+            print(f"Sending welcome messages: en='{message_text_en}', am='{message_text_am}'")
 
             # Send sticker to group
             await bot.send_sticker(
@@ -1015,7 +1020,7 @@ async def handle_chat_member_update(update: ChatMemberUpdated):
                 f"📝 Reason: Eliminated due to unsupported behaviour\n\n"
                 f"🚫 **ተጠቃሚ ተወግዷል** በ {removal_time}\n"
                 f"👤 ተጠቃሚ: {first_name} {username} (መለያ: {user_id})\n"
-                f"📝 ምክንያት: ተገቢ ባልሆነ ባህሪ ምክንያት ተወግዷል"
+                f"📝 ምክንያት: ተገቢ ባልሆኮ ባህሪ ምክንያት ተወግዷል"
             )
             await bot.send_message(
                 chat_id=CHANNEL_ID,
