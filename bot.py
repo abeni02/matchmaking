@@ -878,49 +878,10 @@ async def handle_chat_member_update(update: ChatMemberUpdated):
     user = update.new_chat_member.user  # Get the user whose status changed
     user_id = user.id
     first_name = user.first_name or f"User {user_id}"  # Use first name, fallback to User {user_id}
-    username = f"@{user.username}" if user.username else ""  # Include @username if available
-    
+    username = f"@{user.username}" if user.username else ""  # Include @username if available for logging
+
     # Debug logging to confirm update details
     print(f"Received chat member update: user_id={user_id}, first_name={first_name}, username={username}, old_status={old_status}, new_status={new_status}")
-
-    # Prepare message entities for clickable name/username
-    entities_en = []
-    entities_am = []
-    # Calculate offsets for entities based on message structure
-    welcome_prefix_en = "🎉 Welcome "
-    welcome_prefix_am = "🎉 እኳን ደህና መጡ "
-    if username:
-        # If username exists, make only the username clickable
-        offset_en = len(welcome_prefix_en) + len(first_name)  # After "Welcome " and "first_name"
-        offset_am = len(welcome_prefix_am) + len(first_name)  # After "እኳን ደህና መጡ " and "first_name"
-        entities_en.append({
-            "type": "mention",
-            "offset": offset_en,
-            "length": len(username)
-        })
-        entities_am.append({
-            "type": "mention",
-            "offset": offset_am,
-            "length": len(username)
-        })
-        print(f"Entities for user with username: offset_en={offset_en}, length={len(username)}, offset_am={offset_am}, message_en='🎉 Welcome {first_name}{username} to the group!'")
-    else:
-        # If no username, make only the first_name clickable
-        offset_en = len(welcome_prefix_en)  # After "Welcome "
-        offset_am = len(welcome_prefix_am)  # After "እኳን ደህና መጡ "
-        entities_en.append({
-            "type": "text_mention",
-            "offset": offset_en,
-            "length": len(first_name),
-            "user": user
-        })
-        entities_am.append({
-            "type": "text_mention",
-            "offset": offset_am,
-            "length": len(first_name),
-            "user": user
-        })
-        print(f"Entities for user without username: offset_en={offset_en}, length={len(first_name)}, offset_am={offset_am}, message_en='🎉 Welcome {first_name} to the group!'")
 
     # Bot usage rules in English and Amharic with danger emoji
     rules_en = (
@@ -937,9 +898,9 @@ async def handle_chat_member_update(update: ChatMemberUpdated):
     # Check if user was added to the group
     if old_status in ['left', 'kicked'] and new_status == 'member' and not user.is_bot:
         try:
-            # Format welcome messages in English and Amharic
-            message_text_en = f"🎉 Welcome {first_name}{username} to the group!".strip()
-            message_text_am = f"🎉 እኳን ደህና መጡ {first_name}{username} ወደ ቡድኑ!".strip()
+            # Format welcome messages with first_name only (no username, no clickable entities)
+            message_text_en = f"🎉 Welcome {first_name} to the group!".strip()
+            message_text_am = f"🎉 እኳን ደህና መጡ {first_name} ወደ ቡ�5ኑ!".strip()
 
             # Debug message text
             print(f"Sending welcome messages: en='{message_text_en}', am='{message_text_am}'")
@@ -949,16 +910,14 @@ async def handle_chat_member_update(update: ChatMemberUpdated):
                 chat_id=GROUP_ID,
                 sticker="CAACAgQAAxkBAAE5HVpolL5XMUot-UTmuHKSuwGyycjZngAC6AIAAmbFbQbYr10aCyXkzzYE"
             )
-            # Send welcome messages to group in both languages
+            # Send welcome messages to group in both languages (no entities to keep name non-clickable)
             await bot.send_message(
                 chat_id=GROUP_ID,
-                text=message_text_en,
-                entities=entities_en
+                text=message_text_en
             )
             await bot.send_message(
                 chat_id=GROUP_ID,
-                text=message_text_am,
-                entities=entities_am
+                text=message_text_am
             )
             # Send rules as separate messages in both languages
             await bot.send_message(
@@ -970,7 +929,7 @@ async def handle_chat_member_update(update: ChatMemberUpdated):
                 text=rules_am
             )
             
-            # Log to channel in both languages
+            # Log to channel in both languages (include username for logging only)
             join_time = datetime.datetime.now(pytz.timezone('Africa/Nairobi')).strftime("%Y-%m-%d %H:%M:%S")
             channel_message = (
                 f"🟢 **User Joined** at {join_time}\n"
@@ -978,7 +937,7 @@ async def handle_chat_member_update(update: ChatMemberUpdated):
                 f"📝 Status: Added to the group\n\n"
                 f"🟢 **ተጠቃሚ ተቀላቅሏል** በ {join_time}\n"
                 f"👤 ተጠቃሚ: {first_name} {username} (መለያ: {user_id})\n"
-                f"📝 ሁኔታ: ወደ ቡድኑ ተጨምሯል"
+                f"📝 ሁኔታ: ወደ ቡ�5ኑ ተጨምሯል"
             )
             await bot.send_message(
                 chat_id=CHANNEL_ID,
@@ -987,32 +946,30 @@ async def handle_chat_member_update(update: ChatMemberUpdated):
             print(f"🟢 User {first_name} {username} (ID: {user_id}) added to group and logged")
         except Exception as e:
             print(f"❌ Error handling user {user_id} addition: {e}")
-    
-    # Check if user was kicked or banned (exclude bot or admin self-actions)
-    elif old_status in ['member', 'administrator', 'creator'] and new_status in ['kicked', 'left'] and not user.is_bot:
+
+7    # Check if user was kicked or banned by an admin (exclude bot or admin self-actions)
+    elif old_status in ['member', 'administrator', 'creator'] and new_status == 'kicked' and not user.is_bot:
         try:
-            # Format elimination messages in English and Amharic
-            message_text_en = f"{first_name} {username} is eliminated due to unsupported behaviour.".strip()
-            message_text_am = f"{first_name} {username} ተገቢ ባልሆነ ባህሪ ምክንያት ተወግዷል።".strip()
+            # Format elimination messages with first_name only (no username, no clickable entities)
+            message_text_en = f"{first_name} is eliminated due to unsupported behaviour.".strip()
+            message_text_am = f"{first_name} ተገቢ ባልሆነ ባህሪ ምክንያት ተወግዷል።".strip()
 
             # Send sticker to group
             await bot.send_sticker(
                 chat_id=GROUP_ID,
                 sticker="CAACAgEAAxkBAAE5E-xok7FWOS3t3jQUWxT3_Yw8QGgkNQACSQQAAmGwwEehsx6rufaXijYE"
             )
-            # Send elimination messages to group in both languages
+            # Send elimination messages to group in both languages (no entities to keep name non-clickable)
             await bot.send_message(
                 chat_id=GROUP_ID,
-                text=message_text_en,
-                entities=entities_en
+                text=message_text_en
             )
             await bot.send_message(
                 chat_id=GROUP_ID,
-                text=message_text_am,
-                entities=entities_am
+                text=message_text_am
             )
             
-            # Log to channel in both languages
+            # Log to channel in both languages (include username for logging only)
             removal_time = datetime.datetime.now(pytz.timezone('Africa/Nairobi')).strftime("%Y-%m-%d %H:%M:%S")
             channel_message = (
                 f"🚫 **User Removed** at {removal_time}\n"
@@ -1051,6 +1008,49 @@ async def handle_chat_member_update(update: ChatMemberUpdated):
             print(f"🚫 User {first_name} {username} (ID: {user_id}) removed from group and data cleaned up")
         except Exception as e:
             print(f"❌ Error handling user {user_id} removal: {e}")
+    
+    # Handle user leaving voluntarily (new_status == 'left')
+    elif old_status in ['member', 'administrator', 'creator'] and new_status == 'left' and not user.is_bot:
+        try:
+            # Log to channel in both languages (include username for logging only)
+            leave_time = datetime.datetime.now(pytz.timezone('Africa/Nairobi')).strftime("%Y-%m-%d %H:%M:%S")
+            channel_message = (
+                f"🟡 **User Left** at {leave_time}\n"
+                f"👤 User: {first_name} {username} (ID: {user_id})\n"
+                f"📝 Status: Left the group voluntarily\n\n"
+                f"🟡 **ተጠቃሚ ወጥቷል** በ {leave_time}\n"
+                f"👤 ተጠቃሚ: {first_name} {username} (መለያ: {user_id})\n"
+                f"📝 ሁኔታ: በፈቃዱ ከቡድኑ ወጥቷል"
+            )
+            await bot.send_message(
+                chat_id=CHANNEL_ID,
+                text=channel_message
+            )
+            # Clean up user data
+            async with active_matches_lock, waiting_users_lock, user_data_lock, cooldown_tracker_lock:
+                if user_id in active_matches:
+                    partner_id = active_matches.pop(user_id, None)
+                    active_matches.pop(partner_id, None)
+                    message_id_map.pop(user_id, None)
+                    message_id_map.pop(partner_id, None)
+                    if partner_id:
+                        await bot.send_message(
+                            chat_id=partner_id,
+                            text="❌ Your partner has left the group. You can press 'Begin' to find a new partner.",
+                            reply_markup=get_main_keyboard(state="idle")
+                        )
+                        update_user_data_now(partner_id)
+                if user_id in waiting_users:
+                    waiting_users.discard(user_id)
+                    waiting_start_times.pop(user_id, None)
+                if user_id in user_data:
+                    del user_data[user_id]
+                if user_id in cooldown_tracker:
+                    del cooldown_tracker[user_id]
+                update_user_data_now(user_id)  # Ensure user data is removed from MongoDB
+            print(f"🟡 User {first_name} {username} (ID: {user_id}) left the group voluntarily and data cleaned up")
+        except Exception as e:
+            print(f"❌ Error handling user {user_id} voluntary leave: {e}")
 # Callback query handlers
 @router.callback_query(F.data == "age")
 async def handle_age(callback: CallbackQuery):
