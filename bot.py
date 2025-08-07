@@ -886,9 +886,9 @@ async def handle_chat_member_update(update: ChatMemberUpdated):
     # Check if user was kicked (banned) by an admin, exclude bot or admin self-actions
     if old_status in ['member', 'administrator', 'creator'] and new_status == 'kicked' and not user.is_bot:
         try:
-            # Format the message: first_name (@username) if username exists, else just first_name
-            message_text = f"{first_name} {username} is eliminated due to unsupported behaviour.".strip()
-            message_text = f"{first_name} {username} ተገቢ ባልሆነ ባህሪ ምክንያት ተወግዷል።".strip()
+            # Format elimination messages with first_name and username (no clickable entities)
+        message_text_en = f"{first_name} {username} is eliminated due to unsupported behaviour.".strip()
+        message_text_am = f"{first_name} {username} ተገቢ ባልሆነ ባህሪ ምክንያት ተወግዷል።".strip()
             # Prepare message entities for clickable name/username
             entities = []
             name_length = len(first_name)
@@ -912,12 +912,15 @@ async def handle_chat_member_update(update: ChatMemberUpdated):
                 chat_id=GROUP_ID,
                 sticker="CAACAgEAAxkBAAE5E-xok7FWOS3t3jQUWxT3_Yw8QGgkNQACSQQAAmGwwEehsx6rufaXijYE"
             )
-            # Send message to group with entities
-            await bot.send_message(
-                chat_id=GROUP_ID,
-                text=message_text,
-                entities=entities
-            )
+          # Send elimination messages to group in both languages (no entities to keep name non-clickable)
+        await bot.send_message(
+            chat_id=GROUP_ID,
+            text=message_text_en
+        )
+        await bot.send_message(
+            chat_id=GROUP_ID,
+            text=message_text_am
+        )
            
             # Log to channel (plain text, no entities needed)
             removal_time = datetime.datetime.now(pytz.timezone('Africa/Nairobi')).strftime("%Y-%m-%d %H:%M:%S")
