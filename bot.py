@@ -14,7 +14,8 @@ from aiogram.types import (
     KeyboardButton,
     BotCommand,
     BotCommandScopeAllPrivateChats,
-    BotCommandScopeAllGroupChats
+    BotCommandScopeAllGroupChats,
+    ChatMemberUpdated
 )
 from aiogram.exceptions import TelegramAPIError
 from aiogram.utils import markdown
