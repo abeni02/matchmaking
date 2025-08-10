@@ -1554,15 +1554,27 @@ async def health_check(request):
 
 
 async def on_startup():
-    await bot.set_webhook(WEBHOOK_URL)
-    await setup_mongodb_indexes()
-    await load_user_data()
-    logger.info("Bot is running...")
-
+    try:
+        logger.info(f"Attempting to set webhook to {WEBHOOK_URL}")
+        await bot.set_webhook(WEBHOOK_URL)
+        logger.info(f"Webhook successfully set to {WEBHOOK_URL}")
+    except TelegramAPIError as e:
+        logger.error(f"Failed to set webhook: {e}", exc_info=True)
+        raise
+    except Exception as e:
+        logger.error(f"Unexpected error in webhook setup: {e}", exc_info=True)
+        raise
+    try:
+        await test_redis_connection()
+        await setup_mongodb_indexes()
+        await load_user_data()
+        logger.info("Bot is running...")
+    except Exception as e:
+        logger.error(f"Error in startup (Redis/MongoDB/data loading): {e}", exc_info=True)
+        raise
 
 # Main function
 async def main():
-    # Initialize task variables to None to avoid UnboundLocalError
     periodic_save_task = None
     periodic_match_task = None
     waiting_timeout_task = None
@@ -1571,6 +1583,13 @@ async def main():
     site = None
 
     try:
+        # Ensure a fresh event loop
+        loop = asyncio.get_event_loop()
+        if loop.is_closed():
+            logger.info("Creating new event loop")
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+
         await on_startup()
         await set_bot_commands(bot)
 
@@ -1584,29 +1603,26 @@ async def main():
         app = web.Application()
         app.router.add_post('/', webhook_handler)
         app.router.add_get('/health', health_check)
-        runner= web.AppRunner(app)
+        runner = web.AppRunner(app)
         await runner.setup()
-        site = web.TCPSite(runner, '0.0.0.0', int(os.getenv('PORT', 8080)))
+        port = int(os.getenv('PORT', 8080))
+        logger.info(f"Starting aiohttp server on port {port}")
+        site = web.TCPSite(runner, '0.0.0.0', port)
         await site.start()
-        logger.info("Webhook server started")
+        logger.info(f"Webhook server started on https://0.0.0.0:{port}")
 
         # Keep running
-        await asyncio.Event().wait()  # Wait forever
-    except KeyboardInterrupt:
-        logger.info("Received shutdown signal, saving data...")
-        await save_user_data()
+        await asyncio.Event().wait()
     except Exception as e:
-        logger.error(f"Unexpected error in main: {e}")
+        logger.error(f"Unexpected error in main: {e}", exc_info=True)
         await save_user_data()
     finally:
-        # Cancel background tasks if they were created
+        # Cancel background tasks
         for task in [periodic_save_task, periodic_match_task, waiting_timeout_task, cleanup_task]:
             if task is not None:
                 task.cancel()
-        # Wait for tasks to complete cancellation
         await asyncio.gather(
-            *(task for task in [periodic_save_task, periodic_match_task, waiting_timeout_task, cleanup_task] if
-              task is not None),
+            *(task for task in [periodic_save_task, periodic_match_task, waiting_timeout_task, cleanup_task] if task is not None),
             return_exceptions=True
         )
         # Clean up aiohttp server
@@ -1614,16 +1630,28 @@ async def main():
             await site.stop()
         if runner is not None:
             await runner.cleanup()
-        # Close aiogram bot session
-        await bot.session.close()
+        # Clean up webhook and aiogram session
+        try:
+            await bot.delete_webhook()
+            logger.info("Webhook deleted")
+        except Exception as e:
+            logger.error(f"Failed to delete webhook: {e}")
+        if bot.session is not None and not bot.session.closed:
+            await bot.session.close()
+            logger.info("Bot session closed")
         # Close MongoDB and Redis clients
-        client.close()
-        logger.info("MongoDB client closed")
+        try:
+            client.close()
+            logger.info("MongoDB client closed")
+        except Exception as e:
+            logger.error(f"Error closing MongoDB client: {e}")
         if redis_client:
-            await redis_client.close()
-            logger.info("Redis client closed")
+            try:
+                await redis_client.close()
+                logger.info("Redis client closed")
+            except Exception as e:
+                logger.error(f"Error closing Redis client: {e}")
         logger.info("Bot has been gracefully shut down")
-
 
 if __name__ == "__main__":
     asyncio.run(main())
