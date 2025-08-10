@@ -1566,7 +1566,6 @@ async def on_startup():
         logger.error(f"Unexpected error in webhook setup: {e}", exc_info=True)
         raise
     try:
-        await test_redis_connection()
         await test_mongodb_connection(MONGODB_URI)
         await setup_mongodb_indexes()
         await load_user_data()
