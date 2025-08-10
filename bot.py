@@ -1551,8 +1551,8 @@ async def webhook_handler(request):
 
 async def health_check(request):
     return web.Response(text="OK", status=200)
-    async def test_redis_connection():
-    if not redis_client:
+   async def test_redis_connection():  # Line 1554
+    if not redis_client:            # Line 1555, must be indented
         logger.warning("Redis client not initialized; REDIS_URI may be unset")
         return False
     try:
@@ -1562,7 +1562,6 @@ async def health_check(request):
     except Exception as e:
         logger.error(f"Redis connection test failed: {e}", exc_info=True)
         return False
-
 async def get_user_prefs(user_id: int):
     if redis_client:
         try:
