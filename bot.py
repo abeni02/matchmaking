@@ -1551,6 +1551,37 @@ async def webhook_handler(request):
 
 async def health_check(request):
     return web.Response(text="OK", status=200)
+    async def test_redis_connection():
+    if not redis_client:
+        logger.warning("Redis client not initialized; REDIS_URI may be unset")
+        return False
+    try:
+        await redis_client.ping()
+        logger.info("Redis connection test passed")
+        return True
+    except Exception as e:
+        logger.error(f"Redis connection test failed: {e}", exc_info=True)
+        return False
+
+async def get_user_prefs(user_id: int):
+    if redis_client:
+        try:
+            cached = await redis_client.get(f"user_prefs:{user_id}")
+            if cached:
+                logger.info(f"Redis cache hit for user {user_id}")
+                return json.loads(cached)
+            else:
+                logger.info(f"Redis cache miss for user {user_id}")
+        except Exception as e:
+            logger.error(f"Redis get error for user {user_id}: {e}", exc_info=True)
+    prefs = user_data.get(user_id)
+    if prefs and redis_client:
+        try:
+            await redis_client.set(f"user_prefs:{user_id}", json.dumps(prefs), ex=3600)
+            logger.info(f"Redis cache set for user {user_id}")
+        except Exception as e:
+            logger.error(f"Redis set error for user {user_id}: {e}", exc_info=True)
+    return prefs
 
 
 async def on_startup():
