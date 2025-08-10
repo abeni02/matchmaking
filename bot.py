@@ -141,7 +141,7 @@ def load_fallback_storage():
 
 
 # Validate environment variables
-def test_mongodb_connection(uri: str, max_attempts=3, delay=5):
+async def test_mongodb_connection(uri: str, max_attempts=3, delay=5):
     for attempt in range(max_attempts):
         try:
             client = MongoClient(uri, serverSelectionTimeoutMS=5000)
@@ -153,7 +153,7 @@ def test_mongodb_connection(uri: str, max_attempts=3, delay=5):
             logger.error(f"MongoDB connection test attempt {attempt + 1} failed: {e}")
             if attempt < max_attempts - 1:
                 logger.info(f"Retrying in {delay} seconds...")
-                asyncio.sleep(delay)
+                await asyncio.sleep(delay)
     logger.error("Failed to connect to MongoDB after retries")
     return False
 
@@ -173,7 +173,7 @@ def validate_env_vars():
         logger.warning("REDIS_URI not set; caching disabled")
     if not WEBHOOK_URL:
         raise ValueError("WEBHOOK_URL not set for webhook mode")
-    if not test_mongodb_connection(MONGODB_URI):
+    if not asyncio.run(test_mongodb_connection(MONGODB_URI)):
         raise ValueError("Cannot connect to MongoDB with provided URI")
     logger.info("Environment variables validated successfully")
 
@@ -1544,43 +1544,14 @@ async def get_user_prefs(user_id: int):
 
 # Webhook handler (aiohttp server)
 async def webhook_handler(request):
-    update = await bot.receive_update(await request.json())
-    await dp.feed_update(bot, update)
+    update = await request.json()
+    # Process update (replace with your actual logic)
+    logger.info("Received webhook update")
     return web.Response()
 
 
 async def health_check(request):
-    return web.Response(text="OK", status=200)
-   async def test_redis_connection():  # Line 1554
-    if not redis_client:            # Line 1555, must be indented
-        logger.warning("Redis client not initialized; REDIS_URI may be unset")
-        return False
-    try:
-        await redis_client.ping()
-        logger.info("Redis connection test passed")
-        return True
-    except Exception as e:
-        logger.error(f"Redis connection test failed: {e}", exc_info=True)
-        return False
-async def get_user_prefs(user_id: int):
-    if redis_client:
-        try:
-            cached = await redis_client.get(f"user_prefs:{user_id}")
-            if cached:
-                logger.info(f"Redis cache hit for user {user_id}")
-                return json.loads(cached)
-            else:
-                logger.info(f"Redis cache miss for user {user_id}")
-        except Exception as e:
-            logger.error(f"Redis get error for user {user_id}: {e}", exc_info=True)
-    prefs = user_data.get(user_id)
-    if prefs and redis_client:
-        try:
-            await redis_client.set(f"user_prefs:{user_id}", json.dumps(prefs), ex=3600)
-            logger.info(f"Redis cache set for user {user_id}")
-        except Exception as e:
-            logger.error(f"Redis set error for user {user_id}: {e}", exc_info=True)
-    return prefs
+    return web.Response(text="OK")
 
 
 async def on_startup():
@@ -1596,12 +1567,14 @@ async def on_startup():
         raise
     try:
         await test_redis_connection()
+        await test_mongodb_connection(MONGODB_URI)
         await setup_mongodb_indexes()
         await load_user_data()
         logger.info("Bot is running...")
     except Exception as e:
         logger.error(f"Error in startup (Redis/MongoDB/data loading): {e}", exc_info=True)
         raise
+
 
 # Main function
 async def main():
@@ -1642,15 +1615,16 @@ async def main():
         logger.info(f"Webhook server started on https://0.0.0.0:{port}")
 
         # Keep running
-        await asyncio.Event().wait()
+        await asyncio.Event().wait()  # Wait forever
     except Exception as e:
         logger.error(f"Unexpected error in main: {e}", exc_info=True)
         await save_user_data()
     finally:
-        # Cancel background tasks
+        # Cancel background tasks if they were created
         for task in [periodic_save_task, periodic_match_task, waiting_timeout_task, cleanup_task]:
             if task is not None:
                 task.cancel()
+        # Wait for tasks to complete cancellation
         await asyncio.gather(
             *(task for task in [periodic_save_task, periodic_match_task, waiting_timeout_task, cleanup_task] if task is not None),
             return_exceptions=True
@@ -1660,28 +1634,16 @@ async def main():
             await site.stop()
         if runner is not None:
             await runner.cleanup()
-        # Clean up webhook and aiogram session
-        try:
-            await bot.delete_webhook()
-            logger.info("Webhook deleted")
-        except Exception as e:
-            logger.error(f"Failed to delete webhook: {e}")
-        if bot.session is not None and not bot.session.closed:
-            await bot.session.close()
-            logger.info("Bot session closed")
+        # Close aiogram bot session
+        await bot.session.close()
         # Close MongoDB and Redis clients
-        try:
-            client.close()
-            logger.info("MongoDB client closed")
-        except Exception as e:
-            logger.error(f"Error closing MongoDB client: {e}")
+        client.close()
+        logger.info("MongoDB client closed")
         if redis_client:
-            try:
-                await redis_client.close()
-                logger.info("Redis client closed")
-            except Exception as e:
-                logger.error(f"Error closing Redis client: {e}")
+            await redis_client.close()
+            logger.info("Redis client closed")
         logger.info("Bot has been gracefully shut down")
+
 
 if __name__ == "__main__":
     asyncio.run(main())
