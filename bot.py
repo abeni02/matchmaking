@@ -21,7 +21,7 @@ from aiogram.exceptions import TelegramAPIError
 from aiogram.utils import markdown
 from motor.motor_asyncio import AsyncIOMotorClient
 from pymongo.errors import PyMongoError
-from pymongo import MongoClient, ReplaceOne
+from pymongo import MongoClient, ReplaceOne, ASCENDING
 import json
 from collections import defaultdict, deque
 from uuid import uuid4
@@ -206,9 +206,14 @@ cooldowns_collection = db['cooldowns']
 options_collection = db['options']
 
 
-async def setup_mongodb_indexes():
-    await cooldowns_collection.create_index([("expires_at", 1)], expireAfterSeconds=0)
-    await users_collection.create_index([("age", 1), ("gender", 1), ("religion", 1), ("waiting_since", 1)])
+def setup_mongodb_indexes():
+    sync_client = MongoClient(MONGODB_URI)
+    sync_db = sync_client['bot_database']
+    sync_cooldowns = sync_db['cooldowns']
+    sync_cooldowns.create_index([("expires_at", ASCENDING)], expireAfterSeconds=0)
+    sync_users = sync_db['users']
+    sync_users.create_index([("age", ASCENDING), ("gender", ASCENDING), ("religion", ASCENDING), ("waiting_since", ASCENDING)])
+    sync_client.close()
     logger.info("MongoDB indexes set up")
 
 
@@ -1567,7 +1572,7 @@ async def on_startup():
         raise
     try:
         await test_mongodb_connection(MONGODB_URI)
-        await setup_mongodb_indexes()
+        setup_mongodb_indexes()
         await load_user_data()
         logger.info("Bot is running...")
     except Exception as e:
