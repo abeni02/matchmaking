@@ -1553,17 +1553,7 @@ async def webhook_handler(request):
 async def health_check(request):
     return web.Response(text="OK")
 
-async def test_redis_connection():
-    if not redis_client:
-        logger.warning("Redis client not initialized; REDIS_URI may be unset")
-        return False
-    try:
-        await redis_client.ping()
-        logger.info("Redis connection test passed")
-        return True
-    except Exception as e:
-        logger.error(f"Redis connection test failed: {e}", exc_info=True)
-        return False
+
 async def on_startup():
     try:
         logger.info(f"Attempting to set webhook to {WEBHOOK_URL}")
