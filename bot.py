@@ -1087,7 +1087,7 @@ async def handle_chat_member_update(update: ChatMemberUpdated):
                 text=channel_message
             )
             # Clean up user data
-            async with active_matches_lock, waiting_users_lock, user_data_lock, cooldown_tracker_lock:
+            async with global_state_lock:
                 if user_id in active_matches:
                     partner_id = active_matches.pop(user_id, None)
                     active_matches.pop(partner_id, None)
@@ -1108,8 +1108,6 @@ async def handle_chat_member_update(update: ChatMemberUpdated):
                     waiting_start_times.pop(user_id, None)
                 if user_id in user_data:
                     del user_data[user_id]
-                if user_id in cooldown_tracker:
-                    del cooldown_tracker[user_id]
                 update_user_data_now(user_id)  # Ensure user data is removed from MongoDB
             print(f"🚫 User {first_name} {username} (ID: {user_id}) removed from group and data cleaned up")
         except Exception as e:
@@ -1117,7 +1115,7 @@ async def handle_chat_member_update(update: ChatMemberUpdated):
     elif old_status in ['member', 'administrator', 'creator'] and new_status == 'left' and not user.is_bot:
         # Handle voluntary leave (clean up data without sending elimination message)
         try:
-            async with active_matches_lock, waiting_users_lock, user_data_lock, cooldown_tracker_lock:
+            async with global_state_lock:
                 if user_id in active_matches:
                     partner_id = active_matches.pop(user_id, None)
                     active_matches.pop(partner_id, None)
@@ -1138,8 +1136,6 @@ async def handle_chat_member_update(update: ChatMemberUpdated):
                     waiting_start_times.pop(user_id, None)
                 if user_id in user_data:
                     del user_data[user_id]
-                if user_id in cooldown_tracker:
-                    del cooldown_tracker[user_id]
                 update_user_data_now(user_id)  # Ensure user data is removed from MongoDB
             print(f"👋 User {first_name} {username} (ID: {user_id}) left the group voluntarily and data cleaned up")
         except Exception as e:
@@ -1553,6 +1549,10 @@ async def webhook_handler(request):
     return web.Response()
 
 
+async def health_check(request):
+    return web.Response(text="OK", status=200)
+
+
 async def on_startup():
     await bot.set_webhook(WEBHOOK_URL)
     await setup_mongodb_indexes()
@@ -1561,13 +1561,14 @@ async def on_startup():
 
 
 # Main function
-# Main function
 async def main():
     # Initialize task variables to None to avoid UnboundLocalError
     periodic_save_task = None
     periodic_match_task = None
     waiting_timeout_task = None
     cleanup_task = None
+    runner = None
+    site = None
 
     try:
         await on_startup()
@@ -1582,7 +1583,8 @@ async def main():
         # Start aiohttp webhook server
         app = web.Application()
         app.router.add_post('/', webhook_handler)
-        runner = web.AppRunner(app)
+        app.router.add_get('/health', health_check)
+        runner= web.AppRunner(app)
         await runner.setup()
         site = web.TCPSite(runner, '0.0.0.0', int(os.getenv('PORT', 8080)))
         await site.start()
@@ -1607,6 +1609,13 @@ async def main():
               task is not None),
             return_exceptions=True
         )
+        # Clean up aiohttp server
+        if site is not None:
+            await site.stop()
+        if runner is not None:
+            await runner.cleanup()
+        # Close aiogram bot session
+        await bot.session.close()
         # Close MongoDB and Redis clients
         client.close()
         logger.info("MongoDB client closed")
