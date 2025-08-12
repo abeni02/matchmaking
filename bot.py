@@ -14,19 +14,16 @@ from aiogram.types import (
     KeyboardButton,
     BotCommand,
     BotCommandScopeAllPrivateChats,
-    BotCommandScopeAllGroupChats,
-    ChatMemberUpdated
+    BotCommandScopeAllGroupChats
 )
 from aiogram.exceptions import TelegramAPIError
 from aiogram.utils import markdown
 from motor.motor_asyncio import AsyncIOMotorClient
 from pymongo.errors import PyMongoError
-from pymongo import MongoClient, ReplaceOne, ASCENDING
+from pymongo import MongoClient
 import json
 from collections import defaultdict, deque
 from uuid import uuid4
-from aiohttp import web
-import redis.asyncio as redis  # Added for Redis caching
 
 # Configure structured logging
 logging.basicConfig(
@@ -45,14 +42,12 @@ CHANNEL_ID = os.getenv('CHANNEL_ID')
 GROUP_ID = os.getenv('GROUP_ID')
 GROUP_INVITE_LINK = os.getenv('GROUP_INVITE_LINK')
 MONGODB_URI = os.getenv('MONGODB_URI')
-REDIS_URI = os.getenv('REDIS_URI')  # Added for Redis (e.g., Upstash URL)
-WEBHOOK_URL = os.getenv('WEBHOOK_URL')  # Added for webhook (e.g., https://your-app.koyeb.app)
-MAX_ACTIVE_USERS = int(os.getenv('MAX_ACTIVE_USERS', 1800))
-MAX_CONCURRENT_MATCHES = int(os.getenv('MAX_CONCURRENT_MATCHES', 900))
+MAX_ACTIVE_USERS = int(os.getenv('MAX_ACTIVE_USERS', 600))
+MAX_CONCURRENT_MATCHES = int(os.getenv('MAX_CONCURRENT_MATCHES', 300))
 COOLDOWN_HOURS = int(os.getenv('COOLDOWN_HOURS', 4))
 RATE_LIMIT_SECONDS = int(os.getenv('RATE_LIMIT_SECONDS', 1))
 RATE_LIMIT_MAX_REQUESTS = int(os.getenv('RATE_LIMIT_MAX_REQUESTS', 10))
-WAITING_TIMEOUT_MINUTES = int(os.getenv('WAITING_TIMEOUT_MINUTES', 1440))
+WAITING_TIMEOUT_MINUTES = int(os.getenv('WAITING_TIMEOUT_MINUTES', 10))
 NOTIFICATION_DELAY_SECONDS = float(os.getenv('NOTIFICATION_DELAY_SECONDS', 0))
 
 # Global lock for state consistency
@@ -63,10 +58,6 @@ rate_limits = defaultdict(lambda: {
     "commands": deque(maxlen=10),
     "messages": deque(maxlen=20)
 })
-
-# Redis client for caching
-redis_client = redis.Redis.from_url(REDIS_URI) if REDIS_URI else None
-
 
 # Circuit breaker for MongoDB
 class CircuitBreaker:
@@ -99,26 +90,22 @@ class CircuitBreaker:
                 logger.error(f"Circuit breaker tripped after {self.failures} failures")
             raise
 
-
 mongo_circuit_breaker = CircuitBreaker()
 
 # Fallback storage for MongoDB downtime
 fallback_storage = {}
 FALLBACK_FILE = 'fallback_storage.json'
 
-
 def serialize_datetime(obj):
     if isinstance(obj, datetime.datetime):
         return obj.isoformat()
     raise TypeError("Type not serializable")
-
 
 def deserialize_datetime(data):
     for user_id, user_info in data.items():
         if user_info.get("waiting_since"):
             data[user_id]["waiting_since"] = datetime.datetime.fromisoformat(user_info["waiting_since"])
     return data
-
 
 def save_fallback_storage():
     try:
@@ -127,7 +114,6 @@ def save_fallback_storage():
         logger.info("Fallback storage saved to file")
     except Exception as e:
         logger.error(f"Failed to save fallback storage: {e}")
-
 
 def load_fallback_storage():
     global fallback_storage
@@ -139,9 +125,8 @@ def load_fallback_storage():
     except Exception as e:
         logger.error(f"Failed to load fallback storage: {e}")
 
-
 # Validate environment variables
-async def test_mongodb_connection(uri: str, max_attempts=3, delay=5):
+def test_mongodb_connection(uri: str, max_attempts=3, delay=5):
     for attempt in range(max_attempts):
         try:
             client = MongoClient(uri, serverSelectionTimeoutMS=5000)
@@ -153,10 +138,9 @@ async def test_mongodb_connection(uri: str, max_attempts=3, delay=5):
             logger.error(f"MongoDB connection test attempt {attempt + 1} failed: {e}")
             if attempt < max_attempts - 1:
                 logger.info(f"Retrying in {delay} seconds...")
-                await asyncio.sleep(delay)
+                asyncio.sleep(delay)
     logger.error("Failed to connect to MongoDB after retries")
     return False
-
 
 def validate_env_vars():
     if not BOT_TOKEN or not re.match(r'^\d+:[A-Za-z0-9_-]+$', BOT_TOKEN):
@@ -169,14 +153,9 @@ def validate_env_vars():
         raise ValueError("Invalid or missing GROUP_INVITE_LINK")
     if not MONGODB_URI or not MONGODB_URI.startswith('mongodb'):
         raise ValueError("Invalid or missing MONGODB_URI")
-    if not REDIS_URI:
-        logger.warning("REDIS_URI not set; caching disabled")
-    if not WEBHOOK_URL:
-        raise ValueError("WEBHOOK_URL not set for webhook mode")
-    if not asyncio.run(test_mongodb_connection(MONGODB_URI)):
+    if not test_mongodb_connection(MONGODB_URI):
         raise ValueError("Cannot connect to MongoDB with provided URI")
     logger.info("Environment variables validated successfully")
-
 
 # Set bot commands for private chats only
 async def set_bot_commands(bot: Bot):
@@ -191,7 +170,6 @@ async def set_bot_commands(bot: Bot):
     await bot.set_my_commands([], scope=BotCommandScopeAllGroupChats())
     logger.info("Bot commands set for private chats and removed from group chats")
 
-
 # Bot and dispatcher setup
 validate_env_vars()
 bot = Bot(token=BOT_TOKEN)
@@ -205,17 +183,10 @@ users_collection = db['users']
 cooldowns_collection = db['cooldowns']
 options_collection = db['options']
 
-
-def setup_mongodb_indexes():
-    sync_client = MongoClient(MONGODB_URI)
-    sync_db = sync_client['bot_database']
-    sync_cooldowns = sync_db['cooldowns']
-    sync_cooldowns.create_index([("expires_at", ASCENDING)], expireAfterSeconds=0)
-    sync_users = sync_db['users']
-    sync_users.create_index([("age", ASCENDING), ("gender", ASCENDING), ("religion", ASCENDING), ("waiting_since", ASCENDING)])
-    sync_client.close()
+async def setup_mongodb_indexes():
+    await cooldowns_collection.create_index([("expires_at", 1)], expireAfterSeconds=0)
+    await users_collection.create_index([("age", 1), ("gender", 1), ("religion", 1), ("waiting_since", 1)])
     logger.info("MongoDB indexes set up")
-
 
 # Initialize data structures
 user_data = {}
@@ -223,7 +194,6 @@ active_matches = {}
 waiting_users = set()
 waiting_start_times = {}
 message_id_map = {}
-
 
 # Configurable options
 async def load_options():
@@ -237,14 +207,12 @@ async def load_options():
         await options_collection.insert_one(options)
     return options
 
-
 options = asyncio.run(load_options())
 
 # Button texts
 BEGIN_TEXT = "🚀 Begin"
 STOP_SEARCHING_TEXT = "⏹️ Stop Searching"
 END_CHAT_TEXT = "🔚 End Chat"
-
 
 # Function to get gender emoji
 def get_gender_emoji(gender: str) -> str:
@@ -255,26 +223,26 @@ def get_gender_emoji(gender: str) -> str:
         return "👩"
     return "❓"
 
-
-# Save user data to MongoDB or fallback (with batch writes)
+# Save user data to MongoDB or fallback
 async def save_user_data():
     async with global_state_lock:
         users_to_save = {uid: data.copy() for uid, data in user_data.items()}
         for user_id in users_to_save:
             users_to_save[user_id]["match_partner"] = active_matches.get(user_id)
-            users_to_save[user_id]["waiting_since"] = waiting_start_times.get(
-                user_id) if user_id in waiting_users else None
+            users_to_save[user_id]["waiting_since"] = waiting_start_times.get(user_id) if user_id in waiting_users else None
         try:
-            operations = [ReplaceOne({'_id': uid}, {'_id': uid, **data}, upsert=True) for uid, data in
-                          users_to_save.items()]
-            if operations:
-                await mongo_circuit_breaker.execute(users_collection.bulk_write, operations)
-            logger.info("All user data batch saved to MongoDB")
+            for user_id, data in users_to_save.items():
+                await mongo_circuit_breaker.execute(
+                    users_collection.replace_one,
+                    {'_id': user_id},
+                    {'_id': user_id, **data},
+                    upsert=True
+                )
+            logger.info("All user data saved to MongoDB")
         except Exception as e:
             logger.error(f"Failed to save user data to MongoDB: {e}")
             fallback_storage.update(users_to_save)
             save_fallback_storage()
-
 
 # Load user data from MongoDB or fallback
 async def load_user_data():
@@ -301,18 +269,18 @@ async def load_user_data():
                 del active_matches[active_matches[user_id]]
                 user_data[user_id]["match_partner"] = None
         if fallback_storage:
-            operations = [ReplaceOne({'_id': uid}, {'_id': uid, **data}, upsert=True) for uid, data in
-                          fallback_storage.items()]
-            if operations:
-                await users_collection.bulk_write(operations)
+            for user_id, data in fallback_storage.items():
+                await users_collection.replace_one(
+                    {'_id': user_id},
+                    {'_id': user_id, **data},
+                    upsert=True
+                )
             fallback_storage.clear()
             os.remove(FALLBACK_FILE) if os.path.exists(FALLBACK_FILE) else None
-            logger.info("Fallback storage batch synced to MongoDB")
-        logger.info(
-            f"Loaded data for {len(user_data)} users, {len(active_matches) // 2} matches, {len(waiting_users)} waiting users")
+            logger.info("Fallback storage synced to MongoDB")
+        logger.info(f"Loaded data for {len(user_data)} users, {len(active_matches) // 2} matches, {len(waiting_users)} waiting users")
     except Exception as e:
         logger.error(f"Error loading user data from MongoDB: {e}")
-
 
 # Update single user data
 async def update_user_data(user_id: int):
@@ -332,17 +300,14 @@ async def update_user_data(user_id: int):
                 {'_id': user_id, **user_info},
                 upsert=True
             )
-            logger.info(
-                f"Updated user {user_id} in MongoDB, state: {state}, waiting: {user_id in waiting_users}, matched: {user_id in active_matches}")
+            logger.info(f"Updated user {user_id} in MongoDB, state: {state}, waiting: {user_id in waiting_users}, matched: {user_id in active_matches}")
         except Exception as e:
             logger.error(f"Failed to update user {user_id}, state: {state}: {e}")
             fallback_storage[user_id] = user_info
             save_fallback_storage()
 
-
 def update_user_data_now(user_id: int):
     asyncio.create_task(update_user_data(user_id))
-
 
 # Check group membership
 async def is_group_member(user_id: int) -> bool:
@@ -353,7 +318,6 @@ async def is_group_member(user_id: int) -> bool:
         logger.error(f"Error checking group membership for user {user_id}: {e}")
         return False
 
-
 # Send join group message
 async def send_join_group_message(message: Message):
     join_button = InlineKeyboardButton(text="Join Group", url=GROUP_INVITE_LINK)
@@ -363,17 +327,14 @@ async def send_join_group_message(message: Message):
         reply_markup=join_keyboard
     )
 
-
 # Validate user setup
 def is_setup_complete(user_id: int) -> tuple[bool, list[str]]:
     if user_id not in user_data:
-        return False, ["Age", "Gender", "Religion", "Partner Minimum Age", "Partner Maximum Age", "Partner Gender",
-                       "Partner Religion"]
+        return False, ["Age", "Gender", "Religion", "Partner Minimum Age", "Partner Maximum Age", "Partner Gender", "Partner Religion"]
     user_prefs = user_data[user_id]
     missing_fields = []
     try:
-        if "age" not in user_prefs or not isinstance(int(user_prefs["age"]), int) or int(user_prefs["age"]) < 18 or int(
-                user_prefs["age"]) > 100:
+        if "age" not in user_prefs or not isinstance(int(user_prefs["age"]), int) or int(user_prefs["age"]) < 18 or int(user_prefs["age"]) > 100:
             missing_fields.append("Age")
         if "gender" not in user_prefs or user_prefs["gender"].lower() not in options["genders"]:
             missing_fields.append("Gender")
@@ -382,27 +343,19 @@ def is_setup_complete(user_id: int) -> tuple[bool, list[str]]:
         if "partner" not in user_prefs:
             missing_fields.extend(["Partner Minimum Age", "Partner Maximum Age", "Partner Gender", "Partner Religion"])
         else:
-            if "min_age" not in user_prefs["partner"] or not isinstance(int(user_prefs["partner"]["min_age"]),
-                                                                        int) or int(
-                    user_prefs["partner"]["min_age"]) < 18:
+            if "min_age" not in user_prefs["partner"] or not isinstance(int(user_prefs["partner"]["min_age"]), int) or int(user_prefs["partner"]["min_age"]) < 18:
                 missing_fields.append("Partner Minimum Age")
-            if "max_age" not in user_prefs["partner"] or not isinstance(int(user_prefs["partner"]["max_age"]),
-                                                                        int) or int(
-                    user_prefs["partner"]["max_age"]) > 100:
+            if "max_age" not in user_prefs["partner"] or not isinstance(int(user_prefs["partner"]["max_age"]), int) or int(user_prefs["partner"]["max_age"]) > 100:
                 missing_fields.append("Partner Maximum Age")
-            if "min_age" in user_prefs["partner"] and "max_age" in user_prefs["partner"] and int(
-                    user_prefs["partner"]["min_age"]) > int(user_prefs["partner"]["max_age"]):
+            if "min_age" in user_prefs["partner"] and "max_age" in user_prefs["partner"] and int(user_prefs["partner"]["min_age"]) > int(user_prefs["partner"]["max_age"]):
                 missing_fields.append("Partner Age Range (min > max)")
-            if "gender" not in user_prefs["partner"] or user_prefs["partner"]["gender"].lower() not in options[
-                "genders"] + ["any"]:
+            if "gender" not in user_prefs["partner"] or user_prefs["partner"]["gender"].lower() not in options["genders"] + ["any"]:
                 missing_fields.append("Partner Gender")
-            if "religion" not in user_prefs["partner"] or user_prefs["partner"]["religion"].lower() not in options[
-                "religions"] + ["any"]:
+            if "religion" not in user_prefs["partner"] or user_prefs["partner"]["religion"].lower() not in options["religions"] + ["any"]:
                 missing_fields.append("Partner Religion")
     except ValueError:
         missing_fields.append("Invalid numeric field")
     return len(missing_fields) == 0, missing_fields
-
 
 # Get user state
 async def get_user_state(user_id: int) -> str:
@@ -419,7 +372,6 @@ async def get_user_state(user_id: int) -> str:
         elif in_waiting:
             return "searching"
         return "idle"
-
 
 # Main keyboard
 def get_main_keyboard(state: str = "idle", chat_type: str = "private") -> Optional[ReplyKeyboardMarkup]:
@@ -438,7 +390,6 @@ def get_main_keyboard(state: str = "idle", chat_type: str = "private") -> Option
         resize_keyboard=True
     )
 
-
 # Setup inline keyboard
 def get_setup_inline_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
@@ -448,7 +399,6 @@ def get_setup_inline_keyboard() -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text="Show Profile", callback_data="show_setup")],
         ]
     )
-
 
 # Rate limiting middleware
 async def rate_limit_middleware(handler, event, data):
@@ -471,10 +421,8 @@ async def rate_limit_middleware(handler, event, data):
         return
     return await handler(event, data)
 
-
 router.message.middleware(rate_limit_middleware)
 router.callback_query.middleware(rate_limit_middleware)
-
 
 # Start command
 @router.message(F.chat.type == "private", F.text == "/start")
@@ -498,12 +446,10 @@ async def start_command(message: Message):
     if current_state == "idle":
         await show_setup_menu(message)
 
-
 # Setup handler
 @router.message(F.chat.type == "private", F.text.in_({"⚙️ Setup", "/setup"}))
 async def handle_setup(message: Message):
     await show_setup_menu(message)
-
 
 async def show_setup_menu(message_or_callback: Message | CallbackQuery):
     text = "⚙️ Please select your setup options:"
@@ -513,7 +459,6 @@ async def show_setup_menu(message_or_callback: Message | CallbackQuery):
     else:
         await message_or_callback.message.edit_text(text=text, reply_markup=reply_markup)
         await message_or_callback.answer()
-
 
 # Your setup handler
 @router.callback_query(F.data == "your_setup")
@@ -532,7 +477,6 @@ async def handle_your_setup(callback: CallbackQuery):
     )
     await callback.answer()
 
-
 # Partner setup handler
 @router.callback_query(F.data == "partner_setup")
 async def handle_partner_setup(callback: CallbackQuery):
@@ -550,12 +494,10 @@ async def handle_partner_setup(callback: CallbackQuery):
     )
     await callback.answer()
 
-
 # Back to setup
 @router.callback_query(F.data == "setup")
 async def handle_back_to_setup(callback: CallbackQuery):
     await show_setup_menu(callback)
-
 
 # Check matching limits
 async def can_attempt_match() -> bool:
@@ -563,7 +505,6 @@ async def can_attempt_match() -> bool:
         active_users = len(waiting_users) + len(active_matches)
         active_match_count = len(active_matches) // 2
         return active_users < MAX_ACTIVE_USERS and active_match_count < MAX_CONCURRENT_MATCHES
-
 
 # Start searching
 async def start_searching(message: Message, user_id: int) -> bool:
@@ -599,14 +540,13 @@ async def start_searching(message: Message, user_id: int) -> bool:
         )
     return True
 
-
 # Attempt match using MongoDB query
 async def attempt_match(user_id: int) -> bool:
     try:
         async with global_state_lock:
             if user_id not in waiting_users or not user_data.get(user_id):
                 return False
-            user_prefs = await get_user_prefs(user_id)  # Use cached prefs
+            user_prefs = user_data[user_id]
             now = datetime.datetime.now()
             user_age = int(user_prefs["age"])
             user_gender = user_prefs["gender"].lower()
@@ -623,8 +563,7 @@ async def attempt_match(user_id: int) -> bool:
                     "waiting_since": {"$ne": None},
                     "age": {"$gte": user_min_age, "$lte": user_max_age},
                     "gender": user_partner_gender if user_partner_gender != "any" else {"$in": options["genders"]},
-                    "religion": user_partner_religion if user_partner_religion != "any" else {
-                        "$in": options["religions"]},
+                    "religion": user_partner_religion if user_partner_religion != "any" else {"$in": options["religions"]},
                     "partner.min_age": {"$lte": user_age},
                     "partner.max_age": {"$gte": user_age},
                     "partner.gender": {"$in": [user_gender, "any"]},
@@ -734,10 +673,8 @@ async def attempt_match(user_id: int) -> bool:
         logger.error(f"Error attempting match for user {user_id}: {e}")
     return False
 
-
 # Matching buttons handler
-@router.message(F.chat.type == "private",
-                F.text.in_({BEGIN_TEXT, STOP_SEARCHING_TEXT, END_CHAT_TEXT, "/begin", "/end"}))
+@router.message(F.chat.type == "private", F.text.in_({BEGIN_TEXT, STOP_SEARCHING_TEXT, END_CHAT_TEXT, "/begin", "/end"}))
 async def handle_matching_button(message: Message):
     user_id = message.from_user.id
     text = message.text
@@ -812,7 +749,6 @@ async def handle_matching_button(message: Message):
                     logger.error(f"Failed to notify user {match_id}: {e}")
                 asyncio.create_task(try_match_queued_users())
 
-
 # Help handler
 @router.message(F.chat.type == "private", F.text.in_({"❓ Help", "/help"}))
 async def handle_help(message: Message):
@@ -827,7 +763,6 @@ async def handle_help(message: Message):
             " - 📩 Questions or feedback: @Ask_and_feedback_bot ."
         )
     )
-
 
 # Forward messages with retry and partner check
 async def forward_messages(message: Message):
@@ -869,8 +804,7 @@ async def forward_messages(message: Message):
     sender_gender = user_data.get(user_id, {}).get("gender", "Not set")
     gender_emoji = get_gender_emoji(sender_gender)
     label = f"Partner {gender_emoji}: "
-    reply_to_message_id = message_id_map.get(user_id, {}).get(
-        message.reply_to_message.message_id) if message.reply_to_message else None
+    reply_to_message_id = message_id_map.get(user_id, {}).get(message.reply_to_message.message_id) if message.reply_to_message else None
     user_info = await bot.get_chat(user_id)
     sender_name = user_info.first_name or user_info.username or f"User {user_id}"
     message_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -991,8 +925,7 @@ async def forward_messages(message: Message):
         if message.photo:
             await bot.send_photo(chat_id=CHANNEL_ID, photo=message.photo[-1].file_id, caption=message.caption or "")
         elif message.document:
-            await bot.send_document(chat_id=CHANNEL_ID, document=message.document.file_id,
-                                    caption=message.caption or "")
+            await bot.send_document(chat_id=CHANNEL_ID, document=message.document.file_id, caption=message.caption or "")
         elif message.video:
             await bot.send_video(chat_id=CHANNEL_ID, video=message.video.file_id, caption=message.caption or "")
         elif message.audio:
@@ -1007,186 +940,46 @@ async def forward_messages(message: Message):
     except TelegramAPIError as e:
         logger.error(f"Error logging message to channel {CHANNEL_ID}: {e}")
 
-
 # Ignore group messages
 @router.message(F.chat.type.in_({"group", "supergroup"}))
 async def ignore_group_messages(_message: Message):
     pass
-
-
-@router.chat_member(F.chat.id == int(GROUP_ID))
-async def handle_chat_member_update(update: ChatMemberUpdated):
-    old_status = update.old_chat_member.status
-    new_status = update.new_chat_member.status
-    user = update.new_chat_member.user  # Get the user whose status changed
-    user_id = user.id
-    first_name = user.first_name or f"User {user_id}"  # Use first name, fallback to User {user_id}
-    username = f"@{user.username}" if user.username else ""  # Include @username if available
-
-    # Debug logging to confirm update details
-    print(
-        f"Received chat member update: user_id={user_id}, first_name={first_name}, username={username}, old_status={old_status}, new_status={new_status}")
-
-    # Check if user was kicked (banned) by an admin, exclude bot or admin self-actions
-    if old_status in ['member', 'administrator', 'creator'] and new_status == 'kicked' and not user.is_bot:
-        try:
-            # Format the message: first_name (@username) if username exists, else just first_name
-            message_text = (
-                f"{first_name} {username} is eliminated due to unsupported behaviour.\n"
-                f"{first_name} {username} ተገቢ ባልሆነ ባህሪ ምክንያት ተወግዷል።"
-            ).strip()
-            # Prepare message entities for clickable name/username
-            entities = []
-            name_length = len(first_name)
-            if username:
-                # If username exists, make it a clickable mention (applies to both English and Amharic lines)
-                entities.append({
-                    "type": "mention",
-                    "offset": name_length + 1,  # After first_name and space (English line)
-                    "length": len(username)
-                })
-                entities.append({
-                    "type": "mention",
-                    "offset": name_length + len(f" {username} is eliminated due to unsupported behaviour.\n") + 1,
-                    # After first_name and space (Amharic line)
-                    "length": len(username)
-                })
-            else:
-                # If no username, make first_name a clickable text_mention (applies to both English and Amharic lines)
-                entities.append({
-                    "type": "text_mention",
-                    "offset": 0,
-                    "length": name_length,
-                    "user": user
-                })
-                entities.append({
-                    "type": "text_mention",
-                    "offset": len(f"{first_name} {username} is eliminated due to unsupported behaviour.\n"),
-                    "length": name_length,
-                    "user": user
-                })
-            # Send sticker to group (using a default Telegram sticker)
-            await bot.send_sticker(
-                chat_id=GROUP_ID,
-                sticker="CAACAgEAAxkBAAE5E-xok7FWOS3t3jQUWxT3_Yw8QGgkNQACSQQAAmGwwEehsx6rufaXijYE"
-            )
-            # Send message to group with entities
-            await bot.send_message(
-                chat_id=GROUP_ID,
-                text=message_text,
-                entities=entities
-            )
-
-            # Log to channel (plain text, no entities needed)
-            removal_time = datetime.datetime.now(pytz.timezone('Africa/Nairobi')).strftime("%Y-%m-%d %H:%M:%S")
-            channel_message = (
-                f"🚫 **User Removed** at {removal_time}\n"
-                f"👤 User: {first_name} {username} (ID: {user_id})\n"
-                f"📝 Reason: Eliminated due to unsupported behaviour\n"
-                f"🚫 **ተጠቃሚ ተወግዷል** በ {removal_time}\n"
-                f"👤 ተጠቃሚ: {first_name} {username} (መለያ: {user_id})\n"
-                f"📝 ምክንያት: በአግባብ ባልሆነ ባህሪ ምክንያት ተወግዷል"
-            )
-            await bot.send_message(
-                chat_id=CHANNEL_ID,
-                text=channel_message
-            )
-            # Clean up user data
-            async with global_state_lock:
-                if user_id in active_matches:
-                    partner_id = active_matches.pop(user_id, None)
-                    active_matches.pop(partner_id, None)
-                    message_id_map.pop(user_id, None)
-                    message_id_map.pop(partner_id, None)
-                    if partner_id:
-                        await bot.send_message(
-                            chat_id=partner_id,
-                            text=(
-                                "❌ Your partner has been removed from the group. You can press 'Begin' to find a new partner.\n"
-                                "❌ አጋርህ ከቡድኑ ተወግዷል። አዲስ አጋር ለመፈለግ 'ጀምር' ን መጫን ትችላለህ።"
-                            ),
-                            reply_markup=get_main_keyboard(state="idle")
-                        )
-                        update_user_data_now(partner_id)
-                if user_id in waiting_users:
-                    waiting_users.discard(user_id)
-                    waiting_start_times.pop(user_id, None)
-                if user_id in user_data:
-                    del user_data[user_id]
-                update_user_data_now(user_id)  # Ensure user data is removed from MongoDB
-            print(f"🚫 User {first_name} {username} (ID: {user_id}) removed from group and data cleaned up")
-        except Exception as e:
-            print(f"❌ Error handling user {user_id} removal: {e}")
-    elif old_status in ['member', 'administrator', 'creator'] and new_status == 'left' and not user.is_bot:
-        # Handle voluntary leave (clean up data without sending elimination message)
-        try:
-            async with global_state_lock:
-                if user_id in active_matches:
-                    partner_id = active_matches.pop(user_id, None)
-                    active_matches.pop(partner_id, None)
-                    message_id_map.pop(user_id, None)
-                    message_id_map.pop(partner_id, None)
-                    if partner_id:
-                        await bot.send_message(
-                            chat_id=partner_id,
-                            text=(
-                                "❌ Your partner has left the group. You can press 'Begin' to find a new partner.\n"
-                                "❌ አጋርህ ቡድኑን ለቆ ወጥቷል። አዲስ አጋር ለመፈለግ 'ጀምር' ን መጫን ትችላለህ።"
-                            ),
-                            reply_markup=get_main_keyboard(state="idle")
-                        )
-                        update_user_data_now(partner_id)
-                if user_id in waiting_users:
-                    waiting_users.discard(user_id)
-                    waiting_start_times.pop(user_id, None)
-                if user_id in user_data:
-                    del user_data[user_id]
-                update_user_data_now(user_id)  # Ensure user data is removed from MongoDB
-            print(f"👋 User {first_name} {username} (ID: {user_id}) left the group voluntarily and data cleaned up")
-        except Exception as e:
-            print(f"❌ Error handling user {user_id} voluntary leave: {e}")
-
 
 # Age handler
 @router.callback_query(F.data == "age")
 async def handle_age(callback: CallbackQuery):
     age_keyboard = InlineKeyboardMarkup(
         inline_keyboard=[
-                            [InlineKeyboardButton(text=str(age), callback_data=f"selected_age_{age}") for age in
-                             range(row_start, row_start + 5)]
-                            for row_start in range(18, 100, 5)
-                        ] + [[InlineKeyboardButton(text="⬅️ Back", callback_data="your_setup")]]
+            [InlineKeyboardButton(text=str(age), callback_data=f"selected_age_{age}") for age in range(row_start, row_start + 5)]
+            for row_start in range(18, 100, 5)
+        ] + [[InlineKeyboardButton(text="⬅️ Back", callback_data="your_setup")]]
     )
     await callback.message.edit_text(text="📅 Choose your age:", reply_markup=age_keyboard)
     await callback.answer()
-
 
 # Gender handler
 @router.callback_query(F.data == "gender")
 async def handle_gender(callback: CallbackQuery):
     gender_keyboard = InlineKeyboardMarkup(
         inline_keyboard=[
-                            [InlineKeyboardButton(text=gender.capitalize(), callback_data=f"selected_gender_{gender}")]
-                            for gender in options["genders"]
-                        ] + [[InlineKeyboardButton(text="⬅️ Back", callback_data="your_setup")]]
+            [InlineKeyboardButton(text=gender.capitalize(), callback_data=f"selected_gender_{gender}")]
+            for gender in options["genders"]
+        ] + [[InlineKeyboardButton(text="⬅️ Back", callback_data="your_setup")]]
     )
     await callback.message.edit_text(text="🚻 Please specify your gender:", reply_markup=gender_keyboard)
     await callback.answer()
-
 
 # Religion handler
 @router.callback_query(F.data == "religion")
 async def handle_religion(callback: CallbackQuery):
     religion_keyboard = InlineKeyboardMarkup(
         inline_keyboard=[
-                            [InlineKeyboardButton(text=religion.capitalize(),
-                                                  callback_data=f"selected_religion_{religion}")]
-                            for religion in options["religions"]
-                        ] + [[InlineKeyboardButton(text="⬅️ Back", callback_data="your_setup")]]
+            [InlineKeyboardButton(text=religion.capitalize(), callback_data=f"selected_religion_{religion}")]
+            for religion in options["religions"]
+        ] + [[InlineKeyboardButton(text="⬅️ Back", callback_data="your_setup")]]
     )
     await callback.message.edit_text(text="🙏 Please select your religion:", reply_markup=religion_keyboard)
     await callback.answer()
-
 
 # Age selection
 @router.callback_query(F.data.startswith("selected_age_"))
@@ -1210,7 +1003,6 @@ async def handle_age_selection(callback: CallbackQuery):
         await attempt_match(user_id)
     await handle_gender(callback)
 
-
 # Gender selection
 @router.callback_query(F.data.startswith("selected_gender_"))
 async def handle_gender_selection(callback: CallbackQuery):
@@ -1228,7 +1020,6 @@ async def handle_gender_selection(callback: CallbackQuery):
     if user_id in waiting_users and is_setup_complete(user_id)[0]:
         await attempt_match(user_id)
     await handle_religion(callback)
-
 
 # Religion selection
 @router.callback_query(F.data.startswith("selected_religion_"))
@@ -1261,20 +1052,17 @@ async def handle_religion_selection(callback: CallbackQuery):
         await asyncio.sleep(NOTIFICATION_DELAY_SECONDS)
     await handle_back_to_setup(callback)
 
-
 # Partner minimum age
 @router.callback_query(F.data == "partner_age")
 async def handle_partner_minimum_age(callback: CallbackQuery):
     age_keyboard = InlineKeyboardMarkup(
         inline_keyboard=[
-                            [InlineKeyboardButton(text=str(age), callback_data=f"partner_min_age_{age}") for age in
-                             range(row_start, row_start + 5)]
-                            for row_start in range(18, 100, 5)
-                        ] + [[InlineKeyboardButton(text="⬅️ Back", callback_data="partner_setup")]]
+            [InlineKeyboardButton(text=str(age), callback_data=f"partner_min_age_{age}") for age in range(row_start, row_start + 5)]
+            for row_start in range(18, 100, 5)
+        ] + [[InlineKeyboardButton(text="⬅️ Back", callback_data="partner_setup")]]
     )
     await callback.message.edit_text(text="📅 Choose the **minimum age** for your partner:", reply_markup=age_keyboard)
     await callback.answer()
-
 
 # Partner maximum age
 @router.callback_query(F.data.startswith("partner_min_age_"))
@@ -1292,10 +1080,9 @@ async def handle_partner_maximum_age(callback: CallbackQuery):
         await attempt_match(user_id)
     max_age_keyboard = InlineKeyboardMarkup(
         inline_keyboard=[
-                            [InlineKeyboardButton(text=str(age), callback_data=f"partner_max_age_{age}") for age in
-                             range(row_start, row_start + 5) if age >= min_age]
-                            for row_start in range(18, 100, 5)
-                        ] + [[InlineKeyboardButton(text="⬅️ Back", callback_data="partner_age")]]
+            [InlineKeyboardButton(text=str(age), callback_data=f"partner_max_age_{age}") for age in range(row_start, row_start + 5) if age >= min_age]
+            for row_start in range(18, 100, 5)
+        ] + [[InlineKeyboardButton(text="⬅️ Back", callback_data="partner_age")]]
     )
     await callback.message.edit_text(
         text=f"📅 Minimum age selected: **{min_age}**\nNow, choose the **maximum age** for your partner:",
@@ -1303,19 +1090,16 @@ async def handle_partner_maximum_age(callback: CallbackQuery):
     )
     await callback.answer()
 
-
 # Partner age range
 @router.callback_query(F.data.startswith("partner_max_age_"))
 async def handle_partner_age_range(callback: CallbackQuery):
     user_id = callback.from_user.id
     max_age = int(callback.data.split("_")[-1])
     async with global_state_lock:
-        if user_id not in user_data or "partner" not in user_data[user_id] or "min_age" not in user_data[user_id][
-            "partner"]:
+        if user_id not in user_data or "partner" not in user_data[user_id] or "min_age" not in user_data[user_id]["partner"]:
             await callback.message.edit_text(
                 text="❌ Minimum age not set. Please start from selecting minimum age.",
-                reply_markup=InlineKeyboardMarkup(
-                    inline_keyboard=[[InlineKeyboardButton(text="⬅️ Back", callback_data="partner_age")]])
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Back", callback_data="partner_age")]])
             )
             return
         min_age = user_data[user_id]["partner"]["min_age"]
@@ -1324,10 +1108,9 @@ async def handle_partner_age_range(callback: CallbackQuery):
                 text=f"❌ Maximum age cannot be less than minimum age ({min_age}). Please choose a higher age.",
                 reply_markup=InlineKeyboardMarkup(
                     inline_keyboard=[
-                                        [InlineKeyboardButton(text=str(age), callback_data=f"partner_max_age_{age}") for
-                                         age in range(row_start, row_start + 5) if age >= min_age]
-                                        for row_start in range(18, 100, 5)
-                                    ] + [[InlineKeyboardButton(text="⬅️ Back", callback_data="partner_age")]]
+                        [InlineKeyboardButton(text=str(age), callback_data=f"partner_max_age_{age}") for age in range(row_start, row_start + 5) if age >= min_age]
+                        for row_start in range(18, 100, 5)
+                    ] + [[InlineKeyboardButton(text="⬅️ Back", callback_data="partner_age")]]
                 )
             )
             return
@@ -1338,20 +1121,18 @@ async def handle_partner_age_range(callback: CallbackQuery):
         await attempt_match(user_id)
     await handle_partner_gender(callback)
 
-
 # Partner gender
 @router.callback_query(F.data == "partner_gender")
 async def handle_partner_gender(callback: CallbackQuery):
     gender_keyboard = InlineKeyboardMarkup(
         inline_keyboard=[
-                            [InlineKeyboardButton(text=gender.capitalize(), callback_data=f"partner_gender_{gender}")]
-                            for gender in options["genders"]
-                        ] + [[InlineKeyboardButton(text="Any", callback_data="partner_gender_any")],
-                             [InlineKeyboardButton(text="⬅️ Back", callback_data="partner_setup")]]
+            [InlineKeyboardButton(text=gender.capitalize(), callback_data=f"partner_gender_{gender}")]
+            for gender in options["genders"]
+        ] + [[InlineKeyboardButton(text="Any", callback_data="partner_gender_any")],
+             [InlineKeyboardButton(text="⬅️ Back", callback_data="partner_setup")]]
     )
     await callback.message.edit_text(text="🚻 Please select your partner gender:", reply_markup=gender_keyboard)
     await callback.answer()
-
 
 # Partner gender selection
 @router.callback_query(F.data.startswith("partner_gender_"))
@@ -1373,21 +1154,18 @@ async def handle_partner_gender_selection(callback: CallbackQuery):
         await attempt_match(user_id)
     await handle_partner_religion(callback)
 
-
 # Partner religion
 @router.callback_query(F.data == "partner_religion")
 async def handle_partner_religion(callback: CallbackQuery):
     religion_keyboard = InlineKeyboardMarkup(
         inline_keyboard=[
-                            [InlineKeyboardButton(text=religion.capitalize(),
-                                                  callback_data=f"partner_religion_{religion}")]
-                            for religion in options["religions"]
-                        ] + [[InlineKeyboardButton(text="Any", callback_data="partner_religion_any")],
-                             [InlineKeyboardButton(text="⬅️ Back", callback_data="partner_setup")]]
+            [InlineKeyboardButton(text=religion.capitalize(), callback_data=f"partner_religion_{religion}")]
+            for religion in options["religions"]
+        ] + [[InlineKeyboardButton(text="Any", callback_data="partner_religion_any")],
+             [InlineKeyboardButton(text="⬅️ Back", callback_data="partner_setup")]]
     )
     await callback.message.edit_text(text="🙏 Please select your partner religion:", reply_markup=religion_keyboard)
     await callback.answer()
-
 
 # Partner religion selection
 @router.callback_query(F.data.startswith("partner_religion_"))
@@ -1423,7 +1201,6 @@ async def handle_partner_religion_selection(callback: CallbackQuery):
         await asyncio.sleep(NOTIFICATION_DELAY_SECONDS)
     await handle_back_to_setup(callback)
 
-
 # Show setup
 @router.callback_query(F.data == "show_setup")
 async def handle_show_setup(callback: CallbackQuery):
@@ -1454,7 +1231,6 @@ async def handle_show_setup(callback: CallbackQuery):
     )
     await callback.answer()
 
-
 # Check for long wait times
 async def check_waiting_timeouts():
     while True:
@@ -1478,12 +1254,10 @@ async def check_waiting_timeouts():
                         logger.error(f"Failed to notify user {user_id} of wait timeout: {e}")
         await try_match_queued_users()
 
-
 # Try match queued users
 async def try_match_queued_users():
     if not await can_attempt_match():
-        logger.warning(
-            f"Cannot match queued users: limits reached (users: {len(waiting_users) + len(active_matches)}, matches: {len(active_matches) // 2})")
+        logger.warning(f"Cannot match queued users: limits reached (users: {len(waiting_users) + len(active_matches)}, matches: {len(active_matches) // 2})")
         return
     async with global_state_lock:
         sorted_waiting_users = sorted(
@@ -1494,14 +1268,12 @@ async def try_match_queued_users():
         if user_id in waiting_users and is_setup_complete(user_id)[0]:
             await attempt_match(user_id)
 
-
 # Periodic save
 async def periodic_save():
     while True:
         await asyncio.sleep(60)
         await save_user_data()
         logger.info("Periodic backup of user data performed")
-
 
 # Periodic match check
 async def periodic_match_check():
@@ -1510,7 +1282,6 @@ async def periodic_match_check():
         if waiting_users:
             logger.info(f"Checking for matches among {len(waiting_users)} waiting users")
             await try_match_queued_users()
-
 
 # Cleanup inactive users
 async def cleanup_inactive_users():
@@ -1522,8 +1293,8 @@ async def cleanup_inactive_users():
             users_to_remove = [
                 user_id for user_id, data in user_data.items()
                 if data.get("last_active", now) < inactive_threshold
-                   and user_id not in active_matches
-                   and user_id not in waiting_users
+                and user_id not in active_matches
+                and user_id not in waiting_users
             ]
             for user_id in users_to_remove:
                 user_data.pop(user_id, None)
@@ -1534,120 +1305,46 @@ async def cleanup_inactive_users():
                     logger.error(f"Failed to remove user {user_id}: {e}")
             logger.info(f"Cleaned up {len(users_to_remove)} inactive users")
 
-
-# Get user prefs with Redis caching
-async def get_user_prefs(user_id: int):
-    if redis_client:
-        cached = await redis_client.get(f"user_prefs:{user_id}")
-        if cached:
-            return json.loads(cached)
-    prefs = user_data.get(user_id)
-    if prefs and redis_client:
-        await redis_client.set(f"user_prefs:{user_id}", json.dumps(prefs), ex=3600)  # Cache for 1 hour
-    return prefs
-
-
-# Webhook handler (aiohttp server)
-async def webhook_handler(request):
-    update = await request.json()
-    # Process update (replace with your actual logic)
-    logger.info("Received webhook update")
-    return web.Response()
-
-
-async def health_check(request):
-    return web.Response(text="OK")
-
-
-async def on_startup():
-    try:
-        logger.info(f"Attempting to set webhook to {WEBHOOK_URL}")
-        await bot.set_webhook(WEBHOOK_URL)
-        logger.info(f"Webhook successfully set to {WEBHOOK_URL}")
-    except TelegramAPIError as e:
-        logger.error(f"Failed to set webhook: {e}", exc_info=True)
-        raise
-    except Exception as e:
-        logger.error(f"Unexpected error in webhook setup: {e}", exc_info=True)
-        raise
-    try:
-        await test_mongodb_connection(MONGODB_URI)
-        setup_mongodb_indexes()
-        await load_user_data()
-        logger.info("Bot is running...")
-    except Exception as e:
-        logger.error(f"Error in startup (Redis/MongoDB/data loading): {e}", exc_info=True)
-        raise
-
-
 # Main function
 async def main():
-    periodic_save_task = None
-    periodic_match_task = None
-    waiting_timeout_task = None
-    cleanup_task = None
-    runner = None
-    site = None
-
+    # Ensure MongoDB indexes are set up
     try:
-        # Ensure a fresh event loop
-        loop = asyncio.get_event_loop()
-        if loop.is_closed():
-            logger.info("Creating new event loop")
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-
-        await on_startup()
+        await setup_mongodb_indexes()
+        await load_user_data()
+        logger.info("Bot is running...")
         await set_bot_commands(bot)
-
+        
         # Start background tasks
         periodic_save_task = asyncio.create_task(periodic_save())
         periodic_match_task = asyncio.create_task(periodic_match_check())
         waiting_timeout_task = asyncio.create_task(check_waiting_timeouts())
         cleanup_task = asyncio.create_task(cleanup_inactive_users())
 
-        # Start aiohttp webhook server
-        app = web.Application()
-        app.router.add_post('/', webhook_handler)
-        app.router.add_get('/health', health_check)
-        runner = web.AppRunner(app)
-        await runner.setup()
-        port = int(os.getenv('PORT', 8080))
-        logger.info(f"Starting aiohttp server on port {port}")
-        site = web.TCPSite(runner, '0.0.0.0', port)
-        await site.start()
-        logger.info(f"Webhook server started on https://0.0.0.0:{port}")
-
-        # Keep running
-        await asyncio.Event().wait()  # Wait forever
+        # Start polling with explicit context manager
+        async with bot:
+            await dp.start_polling(bot, close_bot_session=True)
+    except KeyboardInterrupt:
+        logger.info("Received shutdown signal, saving data...")
+        await save_user_data()
     except Exception as e:
-        logger.error(f"Unexpected error in main: {e}", exc_info=True)
+        logger.error(f"Unexpected error in main: {e}")
         await save_user_data()
     finally:
-        # Cancel background tasks if they were created
+        # Cancel background tasks
         for task in [periodic_save_task, periodic_match_task, waiting_timeout_task, cleanup_task]:
-            if task is not None:
-                task.cancel()
+            task.cancel()
         # Wait for tasks to complete cancellation
         await asyncio.gather(
-            *(task for task in [periodic_save_task, periodic_match_task, waiting_timeout_task, cleanup_task] if task is not None),
+            periodic_save_task,
+            periodic_match_task,
+            waiting_timeout_task,
+            cleanup_task,
             return_exceptions=True
         )
-        # Clean up aiohttp server
-        if site is not None:
-            await site.stop()
-        if runner is not None:
-            await runner.cleanup()
-        # Close aiogram bot session
-        await bot.session.close()
-        # Close MongoDB and Redis clients
+        # Close MongoDB client
         client.close()
         logger.info("MongoDB client closed")
-        if redis_client:
-            await redis_client.close()
-            logger.info("Redis client closed")
         logger.info("Bot has been gracefully shut down")
-
 
 if __name__ == "__main__":
     asyncio.run(main())
