@@ -15,6 +15,15 @@ import asyncio
 import os
 import datetime
 from motor.motor_asyncio import AsyncIOMotorClient
+import threading
+import requests
+import time
+import logging
+import pytz
+
+# Set up logging for better debugging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
 
 # Constants for limits
 MAX_ACTIVE_USERS = 2000
@@ -634,7 +643,7 @@ async def handle_help(message: Message):
         text=(
             "💡 Need help? Here's what you can do:\n"
             " - 🚀 Begin: Start your journey (after completing setup).\n"
-            " - ⏹️ Stop Searching: Stop looking for a partner.\n"
+            " - ⏹️ Stop Stop Searching: Stop looking for a partner.\n"
             " - 🔚 End Chat: Stop chatting with your partner.\n"
             " - ⚙️ Setup: Configure your preferences.\n"
             " - ❓ Help: Get guidance and information.\n"
@@ -1303,6 +1312,20 @@ async def periodic_match_check():
             print(f"🔄 Checking for matches among {len(waiting_users)} waiting users")
             await try_match_queued_users()
 
+def keep_alive():
+    # Use APP_URL environment variable or default to a placeholder (update after deployment)
+    url = os.getenv('APP_URL', 'https://your-app-name.koyeb.app')
+    while True:
+        try:
+            response = requests.get(url, timeout=10)
+            if response.status_code == 200:
+                logger.info(f"Successfully pinged {url} to keep alive")
+            else:
+                logger.warning(f"Ping to {url} returned status code {response.status_code}")
+        except requests.RequestException as e:
+            logger.error(f"Ping to {url} failed: {e}")
+        time.sleep(300)  # Ping every 5 minutes to prevent sleep
+
 # Main function
 async def main():
     await load_user_data()
@@ -1314,9 +1337,48 @@ async def main():
     periodic_save_task = asyncio.create_task(periodic_save())
     periodic_match_task = asyncio.create_task(periodic_match_check())
     cleanup_task = asyncio.create_task(cleanup_cooldown_tracker())
+
+    # Start keep-alive thread
+    logger.info("Starting keep-alive thread")
+    threading.Thread(target=keep_alive, daemon=True).start()
+
+    # Webhook setup
+    from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
+    from aiohttp import web
+
+    port = int(os.getenv('PORT', 8080))
+    app_url = os.getenv('APP_URL', 'https://your-app-name.koyeb.app')  # Replace with your actual app URL
+    webhook_path = '/webhook'
+    webhook_url = app_url + webhook_path
+
+    # Set webhook
+    await bot.set_webhook(webhook_url)
+    print(f"✅ Set webhook to {webhook_url}")
+
+    # Set up aiohttp app
+    app = web.Application()
+    request_handler = SimpleRequestHandler(
+        dispatcher=dp,
+        bot=bot,
+    )
+    request_handler.register(app, path=webhook_path)
+    setup_application(app, dp, bot=bot)
+
+    # Root endpoint for hello
+    async def hello(request):
+        return web.Response(text='Hello from Koyeb')
+
+    app.router.add_get('/', hello)
+
+    # Run the server
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, '0.0.0.0', port)
+    await site.start()
+    print(f"✅ Server started on port {port}")
+
     try:
-        async with bot:
-            await dp.start_polling(bot, allowed_updates=['message', 'callback_query', 'chat_member'])
+        await asyncio.Event().wait()
     except KeyboardInterrupt:
         await save_user_data()
         print("💾 Final save completed before shutdown")
@@ -1330,6 +1392,9 @@ async def main():
             await cleanup_task
         except asyncio.CancelledError:
             pass
+        # Cleanup webhook
+        await bot.delete_webhook()
+        await runner.cleanup()
         print("👋 Bot has been gracefully shut down")
 
 if __name__ == "__main__":
