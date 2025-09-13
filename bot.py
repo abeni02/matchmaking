@@ -1033,9 +1033,9 @@ async def handle_gender(callback: CallbackQuery):
 async def handle_religion(callback: CallbackQuery):
     religion_keyboard = InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="Orthodox", callback_data="selected_religion_orthodox")],
-            [InlineKeyboardButton(text="Muslim", callback_data="selected_religion_muslim")],
-            [InlineKeyboardButton(text="Protestant", callback_data="selected_religion_protestant")],
+            [InlineKeyboardButton(text="Orthodox ☦️", callback_data="selected_religion_orthodox")],
+            [InlineKeyboardButton(text="Muslim ☪️", callback_data="selected_religion_muslim")],
+            [InlineKeyboardButton(text="Protestant ✝️", callback_data="selected_religion_protestant")],
             [InlineKeyboardButton(text="⬅️ Back", callback_data="your_setup")],
         ]
     )
@@ -1193,9 +1193,9 @@ async def handle_partner_gender_selection(callback: CallbackQuery):
 async def handle_partner_religion(callback: CallbackQuery):
     religion_keyboard = InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="Orthodox", callback_data="partner_religion_orthodox")],
-            [InlineKeyboardButton(text="Muslim", callback_data="partner_religion_muslim")],
-            [InlineKeyboardButton(text="Protestant", callback_data="partner_religion_protestant")],
+            [InlineKeyboardButton(text="Orthodox ☦️", callback_data="partner_religion_orthodox")],
+            [InlineKeyboardButton(text="Muslim ☪️", callback_data="partner_religion_muslim")],
+            [InlineKeyboardButton(text="Protestant ✝️", callback_data="partner_religion_protestant")],
             [InlineKeyboardButton(text="Any", callback_data="partner_religion_Any")],
             [InlineKeyboardButton(text="⬅️ Back", callback_data="partner_setup")],
         ]
