@@ -877,56 +877,42 @@ async def handle_chat_member_update(update: ChatMemberUpdated, bot: Bot):
     new_status = update.new_chat_member.status
     user = update.new_chat_member.user  # Get the user whose status changed
     user_id = user.id
-    first_name = user.first_name or f"User {user_id}"  # Use first name, fallback to User {user_id}
-    username = f"@{user.username}" if user.username and user.username.strip() else ""  # Include @username if available
+    # Construct full name: first_name + last_name (if available)
+    first_name = user.first_name or f"User {user_id}"
+    last_name = user.last_name if user.last_name else ""
+    full_name = f"{first_name} {last_name}".strip()  # Combine and remove extra spaces
+    username = f"@{user.username}" if user.username and user.username.strip() else ""  # For logging only
     
     # Debug logging to confirm update details
-    print(f"Received chat member update: user_id={user_id}, first_name={first_name}, username={username}, old_status={old_status}, new_status={new_status}")
+    print(f"Received chat member update: user_id={user_id}, full_name={full_name}, username={username}, old_status={old_status}, new_status={new_status}")
 
     # Check if user was kicked (banned) by an admin, exclude bot or admin self-actions
     if old_status in ['member', 'administrator', 'creator'] and new_status == 'kicked' and not user.is_bot:
         try:
-            # Format the message
+            # Format the message with only full name
             message_text = (
-                f"{first_name} {username} is eliminated due to unsupported behaviour.\n"
-                f"{first_name} {username} ተገቢ ባልሆነ ባህሪ ምክንያት ተወግዷል።"
+                f"{full_name} is eliminated due to unsupported behaviour.\n"
+                f"{full_name} ተገቢ ባልሆነ ባህሪ ምክንያት ተወግዷል።"
             ).strip()
             print(f"Message text: '{message_text}' (length: {len(message_text)})")  # Debug message length
             
-            # Prepare message entities for clickable name/username
+            # Prepare message entities for clickable name
             entities = []
-            name_length = len(first_name)
-            if username:
-                # English line mention (after first_name + space)
-                entities.append({
-                    "type": "mention",
-                    "offset": name_length + 1,
-                    "length": len(username)
-                })
-                # Amharic line: Calculate exact offset for username
-                english_part = f"{first_name} {username} is eliminated due to unsupported behaviour.\n"
-                amharic_prefix = f"{first_name} "
-                second_offset = len(english_part) + len(amharic_prefix)
-                entities.append({
-                    "type": "mention",
-                    "offset": second_offset,
-                    "length": len(username)
-                })
-            else:
-                # No username: Use text_mention for first_name
-                english_part = f"{first_name} is eliminated due to unsupported behaviour.\n"
-                entities.append({
-                    "type": "text_mention",
-                    "offset": 0,
-                    "length": name_length,
-                    "user": {"id": user_id, "is_bot": False, "first_name": first_name}
-                })
-                entities.append({
-                    "type": "text_mention",
-                    "offset": len(english_part),
-                    "length": name_length,
-                    "user": {"id": user_id, "is_bot": False, "first_name": first_name}
-                })
+            name_length = len(full_name)
+            # Always use text_mention for full_name (since username is not included in message_text)
+            english_part = f"{full_name} is eliminated due to unsupported behaviour.\n"
+            entities.append({
+                "type": "text_mention",
+                "offset": 0,
+                "length": name_length,
+                "user": {"id": user_id, "is_bot": False, "first_name": first_name}
+            })
+            entities.append({
+                "type": "text_mention",
+                "offset": len(english_part),
+                "length": name_length,
+                "user": {"id": user_id, "is_bot": False, "first_name": first_name}
+            })
             print(f"Entities for user {user_id}: {entities}")
 
             # Send message to group
@@ -940,10 +926,9 @@ async def handle_chat_member_update(update: ChatMemberUpdated, bot: Bot):
             except Exception as msg_e:
                 print(f"Message send failed for user {user_id}: {msg_e}")
                 # Fallback: Send without entities
-                fallback_text = message_text.replace(username, first_name)
                 await bot.send_message(
                     chat_id=GROUP_ID,
-                    text=fallback_text
+                    text=message_text
                 )
                 print(f"Fallback message sent for user {user_id}")
 
@@ -953,7 +938,7 @@ async def handle_chat_member_update(update: ChatMemberUpdated, bot: Bot):
             # Send sticker to group
             sticker_id = "CAACAgEAAxkBAAE5E-xok7FWOS3t3jQUWxT3_Yw8QGgkNQACSQQAAmGwwEehsx6rufaXijYE"
             try:
-                print(f"Attempting to send sticker for user {user_id} ({first_name} {username})")
+                print(f"Attempting to send sticker for user {user_id} ({full_name} {username})")
                 await bot.send_sticker(
                     chat_id=GROUP_ID,
                     sticker=sticker_id
@@ -975,14 +960,14 @@ async def handle_chat_member_update(update: ChatMemberUpdated, bot: Bot):
             # Small delay to avoid rate limits
             await asyncio.sleep(0.5)
 
-            # Log to channel (plain text, no entities needed)
+            # Log to channel (plain text, include username for logging only)
             removal_time = datetime.datetime.now(pytz.timezone('Africa/Nairobi')).strftime("%Y-%m-%d %H:%M:%S")
             channel_message = (
                 f"🚫 **User Removed** at {removal_time}\n"
-                f"👤 User: {first_name} {username} (ID: {user_id})\n"
+                f"👤 User: {full_name} {username} (ID: {user_id})\n"
                 f"📝 Reason: Eliminated due to unsupported behaviour\n"
                 f"🚫 **ተጠቃሚ ተወግዷል** በ {removal_time}\n"
-                f"👤 ተጠቃሚ: {first_name} {username} (መለያ: {user_id})\n"
+                f"👤 ተጠቃሚ: {full_name} {username} (መለያ: {user_id})\n"
                 f"📝 ምክንያት: በአግባብ ባልሆነ ባህሪ ምክንያት ተወግዷል"
             )
             try:
@@ -1025,7 +1010,7 @@ async def handle_chat_member_update(update: ChatMemberUpdated, bot: Bot):
                     update_user_data_now(user_id)  # Ensure user data is removed from MongoDB
                 except Exception as db_e:
                     print(f"Failed to update user data for {user_id}: {db_e}")
-            print(f"🚫 User {first_name} {username} (ID: {user_id}) removed from group and data cleaned up")
+            print(f"🚫 User {full_name} {username} (ID: {user_id}) removed from group and data cleaned up")
         except Exception as e:
             print(f"❌ Error handling user {user_id} removal: {e}")
     elif old_status in ['member', 'administrator', 'creator'] and new_status == 'left' and not user.is_bot:
@@ -1043,7 +1028,7 @@ async def handle_chat_member_update(update: ChatMemberUpdated, bot: Bot):
                                 chat_id=partner_id,
                                 text=(
                                     "❌ Your partner has left the group. You can press 'Begin' to find a new partner.\n"
-                                    "❌ አጋርህ ቡድኑን ለቆ ወጥቷል። አዲሸ አጋር ለመፈለግ 'ጀምር' ን መጫን ትችላለህ።"
+                                    "❌ አጋርህ ቡድኑን ለቆ ወጥቷል። አዲስ አጋር ለመፈለግ 'ጀምር' ን መጫን ትችላለህ።"
                                 ),
                                 reply_markup=get_main_keyboard(state="idle")
                             )
@@ -1061,10 +1046,9 @@ async def handle_chat_member_update(update: ChatMemberUpdated, bot: Bot):
                     update_user_data_now(user_id)  # Ensure user data is removed from MongoDB
                 except Exception as db_e:
                     print(f"Failed to update user data for {user_id}: {db_e}")
-            print(f"👋 User {first_name} {username} (ID: {user_id}) left the group voluntarily and data cleaned up")
+            print(f"👋 User {full_name} {username} (ID: {user_id}) left the group voluntarily and data cleaned up")
         except Exception as e:
             print(f"❌ Error handling user {user_id} voluntary leave: {e}")
-
 # Callback query handlers
 @router.callback_query(F.data == "age")
 async def handle_age(callback: CallbackQuery):
