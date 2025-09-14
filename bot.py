@@ -870,8 +870,7 @@ async def forward_messages(message: Message):
             "⚠️ You are not currently chatting with anyone. Press 'Begin' to find a partner.",
             reply_markup=get_main_keyboard(state="idle")
         )
-  # elimination      
-Abeni, [9/14/2025 2:46 PM]
+  #       
 @router.chat_member(F.chat.id == int(GROUP_ID))
 async def handle_chat_member_update(update: ChatMemberUpdated):
     old_status = update.old_chat_member.status
@@ -936,10 +935,10 @@ async def handle_chat_member_update(update: ChatMemberUpdated):
             # Log to channel (plain text, no entities needed)
             removal_time = datetime.datetime.now(pytz.timezone('Africa/Nairobi')).strftime("%Y-%m-%d %H:%M:%S")
             channel_message = (
-                f"🚫 User Removed at {removal_time}\n"
+                f"🚫 **User Removed** at {removal_time}\n"
                 f"👤 User: {first_name} {username} (ID: {user_id})\n"
                 f"📝 Reason: Eliminated due to unsupported behaviour\n"
-                f"🚫 ተጠቃሚ ተወግዷል በ {removal_time}\n"
+                f"🚫 **ተጠቃሚ ተወግዷል** በ {removal_time}\n"
                 f"👤 ተጠቃሚ: {first_name} {username} (መለያ: {user_id})\n"
                 f"📝 ምክንያት: በአግባብ ባልሆነ ባህሪ ምክንያት ተወግዷል"
             )
@@ -951,9 +950,7 @@ async def handle_chat_member_update(update: ChatMemberUpdated):
             async with active_matches_lock, waiting_users_lock, user_data_lock, cooldown_tracker_lock:
                 if user_id in active_matches:
                     partner_id = active_matches.pop(user_id, None)
-
-Abeni, [9/14/2025 2:46 PM]
-active_matches.pop(partner_id, None)
+                    active_matches.pop(partner_id, None)
                     message_id_map.pop(user_id, None)
                     message_id_map.pop(partner_id, None)
                     if partner_id:
