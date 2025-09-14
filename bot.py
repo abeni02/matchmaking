@@ -878,11 +878,10 @@ async def handle_chat_member_update(update: ChatMemberUpdated):
     user = update.new_chat_member.user  # Get the user whose status changed
     user_id = user.id
     first_name = user.first_name or f"User {user_id}"  # Use first name, fallback to User {user_id}
-    username = f"@{user.username}" if user.username else ""  # Include @username if available
     
-    # Get called name from user_data, fallback to username or first_name
+    # Get called name from user_data, fallback to first_name
     async with user_data_lock:
-        display_name = user_data.get(user_id, {}).get("called_name", username or first_name)
+        display_name = user_data.get(user_id, {}).get("called_name", first_name)
 
     # Debug logging to confirm update details
     print(f"Received chat member update: user_id={user_id}, display_name={display_name}, old_status={old_status}, new_status={new_status}")
@@ -898,30 +897,18 @@ async def handle_chat_member_update(update: ChatMemberUpdated):
             # Prepare message entities for clickable name
             entities = []
             name_length = len(display_name)
-            if display_name.startswith("@"):  # Use mention for @-prefixed names
-                entities.append({
-                    "type": "mention",
-                    "offset": 0,
-                    "length": name_length
-                })
-                entities.append({
-                    "type": "mention",
-                    "offset": len(f"{display_name} is eliminated due to unsupported behaviour.\n"),
-                    "length": name_length
-                })
-            else:  # Use text_mention for non-@-prefixed names
-                entities.append({
-                    "type": "text_mention",
-                    "offset": 0,
-                    "length": name_length,
-                    "user": user
-                })
-                entities.append({
-                    "type": "text_mention",
-                    "offset": len(f"{display_name} is eliminated due to unsupported behaviour.\n"),
-                    "length": name_length,
-                    "user": user
-                })
+            entities.append({
+                "type": "text_mention",
+                "offset": 0,
+                "length": name_length,
+                "user": user
+            })
+            entities.append({
+                "type": "text_mention",
+                "offset": len(f"{display_name} is eliminated due to unsupported behaviour.\n"),
+                "length": name_length,
+                "user": user
+            })
             # Send sticker to group
             await bot.send_sticker(
                 chat_id=GROUP_ID,
@@ -990,7 +977,7 @@ async def handle_chat_member_update(update: ChatMemberUpdated):
                             chat_id=partner_id,
                             text=(
                                 f"❌ Your partner ({display_name}) has left the group. You can press 'Begin' to find a new partner.\n"
-                                f"❌ አጋርህ ({display_name}) ቡድኑን ለቆ ወጥቷል። አዲስ አጋር ለመፈለግ 'ጀምር' ን መጫን ትችላለህ።"
+                                f"❌ አጋርህ ({display_name}) ቡድኑን ለቆ ወጥቷል። አዲሸ አጋር ለመፈለግ 'ጀምር' ን መጫን ትችላለህ።"
                             ),
                             reply_markup=get_main_keyboard(state="idle")
                         )
