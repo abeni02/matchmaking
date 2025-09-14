@@ -888,98 +888,97 @@ async def handle_chat_member_update(update: ChatMemberUpdated, bot: Bot):
 
     # Check if user was kicked (banned) by an admin, exclude bot or admin self-actions
     if old_status in ['member', 'administrator', 'creator'] and new_status == 'kicked' and not user.is_bot:
+        # Format the message with only full name
+        message_text = (
+            f"{full_name} is eliminated due to unsupported behaviour.\n"
+            f"{full_name} ተገቢ ባልሆነ ባህሪ ምክንያት ተወግዷል።"
+        ).strip()
+        print(f"Message text: '{message_text}' (length: {len(message_text)})")  # Debug message length
+
+        # Prepare message entities for clickable full name
+        entities = []
+        name_length = len(full_name)
+        english_part = f"{full_name} is eliminated due to unsupported behaviour.\n"
+        entities.append({
+            "type": "text_mention",
+            "offset": 0,
+            "length": name_length,
+            "user": {"id": user_id, "is_bot": False, "first_name": first_name}
+        })
+        entities.append({
+            "type": "text_mention",
+            "offset": len(english_part),
+            "length": name_length,
+            "user": {"id": user_id, "is_bot": False, "first_name": first_name}
+        })
+        print(f"Entities for user {user_id}: {entities}")
+
+        # Send message to group
         try:
-            # Format the message with only full name
-            message_text = (
-                f"{full_name} is eliminated due to unsupported behaviour.\n"
-                f"{full_name} ተገቢ ባልሆነ ባህሪ ምክንያት ተወግዷል።"
-            ).strip()
-            print(f"Message text: '{message_text}' (length: {len(message_text)})")  # Debug message length
-            
-            # Prepare message entities for clickable name
-            entities = []
-            name_length = len(full_name)
-            # Always use text_mention for full_name (since username is not included in message_text)
-            english_part = f"{full_name} is eliminated due to unsupported behaviour.\n"
-            entities.append({
-                "type": "text_mention",
-                "offset": 0,
-                "length": name_length,
-                "user": {"id": user_id, "is_bot": False, "first_name": first_name}
-            })
-            entities.append({
-                "type": "text_mention",
-                "offset": len(english_part),
-                "length": name_length,
-                "user": {"id": user_id, "is_bot": False, "first_name": first_name}
-            })
-            print(f"Entities for user {user_id}: {entities}")
+            await bot.send_message(
+                chat_id=GROUP_ID,
+                text=message_text,
+                entities=entities
+            )
+            print(f"Message sent successfully for user {user_id}")
+        except Exception as msg_e:
+            print(f"Message send failed for user {user_id}: {msg_e}")
+            # Fallback: Send without entities
+            await bot.send_message(
+                chat_id=GROUP_ID,
+                text=message_text
+            )
+            print(f"Fallback message sent for user {user_id}")
 
-            # Send message to group
+        # Small delay to avoid rate limits
+        await asyncio.sleep(0.5)
+
+        # Send sticker to group (moved outside main try to ensure it’s attempted)
+        sticker_id = "CAACAgEAAxkBAAE5E-xok7FWOS3t3jQUWxT3_Yw8QGgkNQACSQQAAmGwwEehsx6rufaXijYE"
+        try:
+            print(f"Attempting to send sticker for user {user_id} ({full_name} {username})")
+            await bot.send_sticker(
+                chat_id=GROUP_ID,
+                sticker=sticker_id
+            )
+            print(f"Sticker sent successfully for user {user_id}")
+        except Exception as sticker_e:
+            print(f"Sticker send failed for user {user_id}: {sticker_e}")
+            # Fallback: Try a known good sticker
+            fallback_sticker = "CAADAgADBAADfyesDlKEqOOd72VKAg"  # Public sticker
             try:
-                await bot.send_message(
-                    chat_id=GROUP_ID,
-                    text=message_text,
-                    entities=entities
-                )
-                print(f"Message sent successfully for user {user_id}")
-            except Exception as msg_e:
-                print(f"Message send failed for user {user_id}: {msg_e}")
-                # Fallback: Send without entities
-                await bot.send_message(
-                    chat_id=GROUP_ID,
-                    text=message_text
-                )
-                print(f"Fallback message sent for user {user_id}")
-
-            # Small delay to avoid rate limits
-            await asyncio.sleep(0.5)
-
-            # Send sticker to group
-            sticker_id = "CAACAgEAAxkBAAE5E-xok7FWOS3t3jQUWxT3_Yw8QGgkNQACSQQAAmGwwEehsx6rufaXijYE"
-            try:
-                print(f"Attempting to send sticker for user {user_id} ({full_name} {username})")
                 await bot.send_sticker(
                     chat_id=GROUP_ID,
-                    sticker=sticker_id
+                    sticker=fallback_sticker
                 )
-                print(f"Sticker sent successfully for user {user_id}")
-            except Exception as sticker_e:
-                print(f"Sticker send failed for user {user_id}: {sticker_e}")
-                # Fallback: Try a known good sticker
-                fallback_sticker = "CAADAgADBAADfyesDlKEqOOd72VKAg"  # Public sticker
-                try:
-                    await bot.send_sticker(
-                        chat_id=GROUP_ID,
-                        sticker=fallback_sticker
-                    )
-                    print(f"Fallback sticker sent for user {user_id}")
-                except Exception as fallback_e:
-                    print(f"Fallback sticker send failed for user {user_id}: {fallback_e}")
+                print(f"Fallback sticker sent for user {user_id}")
+            except Exception as fallback_e:
+                print(f"Fallback sticker send failed for user {user_id}: {fallback_e}")
 
-            # Small delay to avoid rate limits
-            await asyncio.sleep(0.5)
+        # Small delay to avoid rate limits
+        await asyncio.sleep(0.5)
 
-            # Log to channel (plain text, include username for logging only)
-            removal_time = datetime.datetime.now(pytz.timezone('Africa/Nairobi')).strftime("%Y-%m-%d %H:%M:%S")
-            channel_message = (
-                f"🚫 **User Removed** at {removal_time}\n"
-                f"👤 User: {full_name} {username} (ID: {user_id})\n"
-                f"📝 Reason: Eliminated due to unsupported behaviour\n"
-                f"🚫 **ተጠቃሚ ተወግዷል** በ {removal_time}\n"
-                f"👤 ተጠቃሚ: {full_name} {username} (መለያ: {user_id})\n"
-                f"📝 ምክንያት: በአግባብ ባልሆነ ባህሪ ምክንያት ተወግዷል"
+        # Log to channel (include username for logging)
+        removal_time = datetime.datetime.now(pytz.timezone('Africa/Nairobi')).strftime("%Y-%m-%d %H:%M:%S")
+        channel_message = (
+            f"🚫 **User Removed** at {removal_time}\n"
+            f"👤 User: {full_name} {username} (ID: {user_id})\n"
+            f"📝 Reason: Eliminated due to unsupported behaviour\n"
+            f"🚫 **ተጠቃሚ ተወግዷል** በ {removal_time}\n"
+            f"👤 ተጠቃሚ: {full_name} {username} (መለያ: {user_id})\n"
+            f"📝 ምክንያት: በአግባብ ባልሆነ ባህሪ ምክንያት ተወግዷል"
+        )
+        try:
+            await bot.send_message(
+                chat_id=CHANNEL_ID,
+                text=channel_message
             )
-            try:
-                await bot.send_message(
-                    chat_id=CHANNEL_ID,
-                    text=channel_message
-                )
-                print(f"Channel message sent for user {user_id}")
-            except Exception as channel_e:
-                print(f"Channel message send failed for user {user_id}: {channel_e}")
+            print(f"Channel message sent for user {user_id}")
+        except Exception as channel_e:
+            print(f"Channel message send failed for user {user_id}: {channel_e}")
 
-            # Clean up user data
+        # Clean up user data
+        try:
             async with active_matches_lock, waiting_users_lock, user_data_lock, cooldown_tracker_lock:
                 if user_id in active_matches:
                     partner_id = active_matches.pop(user_id, None)
@@ -1013,6 +1012,7 @@ async def handle_chat_member_update(update: ChatMemberUpdated, bot: Bot):
             print(f"🚫 User {full_name} {username} (ID: {user_id}) removed from group and data cleaned up")
         except Exception as e:
             print(f"❌ Error handling user {user_id} removal: {e}")
+
     elif old_status in ['member', 'administrator', 'creator'] and new_status == 'left' and not user.is_bot:
         # Handle voluntary leave (clean up data without sending elimination message)
         try:
