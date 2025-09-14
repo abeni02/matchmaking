@@ -891,45 +891,34 @@ async def handle_chat_member_update(update: ChatMemberUpdated):
                 f"{first_name} {username} is eliminated due to unsupported behaviour.\n"
                 f"{first_name} {username} ተገቢ ባልሆነ ባህሪ ምክንያት ተወግዷል።"
             ).strip()
-            # Prepare message entities for clickable name/username
+
             entities = []
-            name_length = len(first_name)
-            if username:
-                # If username exists, make it a clickable mention (applies to both English and Amharic lines)
-                entities.append({
-                    "type": "mention",
-                    "offset": name_length + 1,  # After first_name and space (English line)
-                    "length": len(username)
-                })
-                entities.append({
-                    "type": "mention",
-                    "offset": name_length + len(f" {username} is eliminated due to unsupported behaviour.\n") + 1,  # After first_name and space (Amharic line)
-                    "length": len(username)
-                })
-            else:
-                # If no username, make first_name a clickable text_mention (applies to both English and Amharic lines)
+            if not username:
+                # If no username, make first_name a clickable text_mention (English + Amharic lines)
+                name_length = len(first_name)
                 entities.append({
                     "type": "text_mention",
-                    "offset": 0,
+                    "offset": 0,  # start of first line
                     "length": name_length,
                     "user": user
                 })
                 entities.append({
                     "type": "text_mention",
-                    "offset": len(f"{first_name} {username} is eliminated due to unsupported behaviour.\n"),
+                    "offset": len(f"{first_name}  is eliminated due to unsupported behaviour.\n"),
                     "length": name_length,
                     "user": user
                 })
+
             # Send sticker to group (using a default Telegram sticker)
             await bot.send_sticker(
                 chat_id=GROUP_ID,
                 sticker="CAACAgEAAxkBAAE5E-xok7FWOS3t3jQUWxT3_Yw8QGgkNQACSQQAAmGwwEehsx6rufaXijYE"
             )
-            # Send message to group with entities
+            # Send message to group with entities (only if needed)
             await bot.send_message(
                 chat_id=GROUP_ID,
                 text=message_text,
-                entities=entities
+                entities=entities if entities else None
             )
            
             # Log to channel (plain text, no entities needed)
@@ -946,6 +935,7 @@ async def handle_chat_member_update(update: ChatMemberUpdated):
                 chat_id=CHANNEL_ID,
                 text=channel_message
             )
+
             # Clean up user data
             async with active_matches_lock, waiting_users_lock, user_data_lock, cooldown_tracker_lock:
                 if user_id in active_matches:
@@ -974,6 +964,7 @@ async def handle_chat_member_update(update: ChatMemberUpdated):
             print(f"🚫 User {first_name} {username} (ID: {user_id}) removed from group and data cleaned up")
         except Exception as e:
             print(f"❌ Error handling user {user_id} removal: {e}")
+
     elif old_status in ['member', 'administrator', 'creator'] and new_status == 'left' and not user.is_bot:
         # Handle voluntary leave (clean up data without sending elimination message)
         try:
@@ -1004,6 +995,7 @@ async def handle_chat_member_update(update: ChatMemberUpdated):
             print(f"👋 User {first_name} {username} (ID: {user_id}) left the group voluntarily and data cleaned up")
         except Exception as e:
             print(f"❌ Error handling user {user_id} voluntary leave: {e}")
+
 # Callback query handlers
 @router.callback_query(F.data == "age")
 async def handle_age(callback: CallbackQuery):
