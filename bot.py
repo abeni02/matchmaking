@@ -903,15 +903,6 @@ async def handle_chat_member_update(update: ChatMemberUpdated, bot: Bot):
                     "offset": name_length + 1,
                     "length": len(username)
                 })
-                # Amharic line: Calculate exact offset for username
-                english_part = f"{first_name} {username} is eliminated due to unsupported behaviour.\n"
-                amharic_prefix = f"{first_name} "
-                second_offset = len(english_part) + len(amharic_prefix)
-                entities.append({
-                    "type": "mention",
-                    "offset": second_offset,
-                    "length": len(username)
-                })
             else:
                 # No username: Use text_mention for first_name
                 english_part = f"{first_name} is eliminated due to unsupported behaviour.\n"
