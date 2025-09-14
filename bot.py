@@ -903,13 +903,23 @@ async def handle_chat_member_update(update: ChatMemberUpdated, bot: Bot):
             "type": "text_mention",
             "offset": 0,
             "length": name_length,
-            "user": {"id": user_id, "is_bot": False, "first_name": first_name}
+            "user": {
+                "id": user_id,
+                "is_bot": False,
+                "first_name": first_name,
+                "last_name": last_name or None
+            }
         })
         entities.append({
             "type": "text_mention",
             "offset": len(english_part),
             "length": name_length,
-            "user": {"id": user_id, "is_bot": False, "first_name": first_name}
+            "user": {
+                "id": user_id,
+                "is_bot": False,
+                "first_name": first_name,
+                "last_name": last_name or None
+            }
         })
         print(f"Entities for user {user_id}: {entities}")
 
@@ -933,7 +943,7 @@ async def handle_chat_member_update(update: ChatMemberUpdated, bot: Bot):
         # Small delay to avoid rate limits
         await asyncio.sleep(0.5)
 
-        # Send sticker to group (moved outside main try to ensure it’s attempted)
+        # Send sticker to group
         sticker_id = "CAACAgEAAxkBAAE5E-xok7FWOS3t3jQUWxT3_Yw8QGgkNQACSQQAAmGwwEehsx6rufaXijYE"
         try:
             print(f"Attempting to send sticker for user {user_id} ({full_name} {username})")
