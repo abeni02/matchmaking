@@ -878,7 +878,7 @@ async def handle_chat_member_update(update: ChatMemberUpdated):
     user = update.new_chat_member.user  # Get the user whose status changed
     user_id = user.id
     first_name = user.first_name or f"User {user_id}"  # Use first name, fallback to User {user_id}
-    username = f"@{user.username}" if user.username else ""  # Include @username if available
+    username = f"@{user.username}" if user.username and user.username.strip() else ""  # Include @username if available
     
     # Debug logging to confirm update details
     print(f"Received chat member update: user_id={user_id}, first_name={first_name}, username={username}, old_status={old_status}, new_status={new_status}")
@@ -886,41 +886,57 @@ async def handle_chat_member_update(update: ChatMemberUpdated):
     # Check if user was kicked (banned) by an admin, exclude bot or admin self-actions
     if old_status in ['member', 'administrator', 'creator'] and new_status == 'kicked' and not user.is_bot:
         try:
-            # Format the message: first_name (@username) if username exists, else just first_name
+            # Format the message
             message_text = (
                 f"{first_name} {username} is eliminated due to unsupported behaviour.\n"
                 f"{first_name} {username} ተገቢ ባልሆነ ባህሪ ምክንያት ተወግዷል።"
             ).strip()
-
+            # Prepare message entities for clickable name/username
             entities = []
-            if not username:
-                # If no username, make first_name a clickable text_mention (English + Amharic lines)
-                name_length = len(first_name)
+            name_length = len(first_name)
+            if username:
+                # If username exists, make it a clickable mention (applies to both English and Amharic lines)
+                entities.append({
+                    "type": "mention",
+                    "offset": name_length + 1,  # After first_name and space (English line)
+                    "length": len(username)
+                })
+                amharic_line_start = len(f"{first_name} {username} is eliminated due to unsupported behaviour.\n")
+                entities.append({
+                    "type": "mention",
+                    "offset": amharic_line_start + name_length + 1,  # After first_name and space (Amharic line)
+                    "length": len(username)
+                })
+            else:
+                # If no username, make first_name a clickable text_mention (applies to both English and Amharic lines)
                 entities.append({
                     "type": "text_mention",
-                    "offset": 0,  # start of first line
+                    "offset": 0,
                     "length": name_length,
                     "user": user
                 })
                 entities.append({
                     "type": "text_mention",
-                    "offset": len(f"{first_name}  is eliminated due to unsupported behaviour.\n"),
+                    "offset": len(f"{first_name} {username} is eliminated due to unsupported behaviour.\n"),
                     "length": name_length,
                     "user": user
                 })
-
-            # Send sticker to group (using a default Telegram sticker)
-            await bot.send_sticker(
-                chat_id=GROUP_ID,
-                sticker="CAACAgEAAxkBAAE5E-xok7FWOS3t3jQUWxT3_Yw8QGgkNQACSQQAAmGwwEehsx6rufaXijYE"
-            )
-            # Send message to group with entities (only if needed)
+            print(f"Entities for user {user_id}: {entities}")
+            # Send message to group
             await bot.send_message(
                 chat_id=GROUP_ID,
                 text=message_text,
-                entities=entities if entities else None
+                entities=entities
             )
-           
+            # Send sticker to group
+            try:
+                print(f"Attempting to send sticker for user {user_id} ({first_name} {username})")
+                await bot.send_sticker(
+                    chat_id=GROUP_ID,
+                    sticker="CAACAgEAAxkBAAE5E-xok7FWOS3t3jQUWxT3_Yw8QGgkNQACSQQAAmGwwEehsx6rufaXijYE"
+                )
+            except Exception as e:
+                print(f"Failed to send sticker for user {user_id}: {e}")
             # Log to channel (plain text, no entities needed)
             removal_time = datetime.datetime.now(pytz.timezone('Africa/Nairobi')).strftime("%Y-%m-%d %H:%M:%S")
             channel_message = (
@@ -935,7 +951,6 @@ async def handle_chat_member_update(update: ChatMemberUpdated):
                 chat_id=CHANNEL_ID,
                 text=channel_message
             )
-
             # Clean up user data
             async with active_matches_lock, waiting_users_lock, user_data_lock, cooldown_tracker_lock:
                 if user_id in active_matches:
@@ -964,7 +979,6 @@ async def handle_chat_member_update(update: ChatMemberUpdated):
             print(f"🚫 User {first_name} {username} (ID: {user_id}) removed from group and data cleaned up")
         except Exception as e:
             print(f"❌ Error handling user {user_id} removal: {e}")
-
     elif old_status in ['member', 'administrator', 'creator'] and new_status == 'left' and not user.is_bot:
         # Handle voluntary leave (clean up data without sending elimination message)
         try:
