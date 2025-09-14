@@ -872,7 +872,7 @@ async def forward_messages(message: Message):
         )
   #       
 @router.chat_member(F.chat.id == int(GROUP_ID))
-async def handle_chat_member_update(update: ChatMemberUpdated):
+async def handle_chat_member_update(update: ChatMemberUpdated, bot: Bot):
     old_status = update.old_chat_member.status
     new_status = update.new_chat_member.status
     user = update.new_chat_member.user  # Get the user whose status changed
@@ -891,52 +891,90 @@ async def handle_chat_member_update(update: ChatMemberUpdated):
                 f"{first_name} {username} is eliminated due to unsupported behaviour.\n"
                 f"{first_name} {username} ተገቢ ባልሆነ ባህሪ ምክንያት ተወግዷል።"
             ).strip()
+            print(f"Message text: '{message_text}' (length: {len(message_text)})")  # Debug message length
+            
             # Prepare message entities for clickable name/username
             entities = []
             name_length = len(first_name)
             if username:
-                # If username exists, make it a clickable mention (applies to both English and Amharic lines)
+                # English line mention (after first_name + space)
                 entities.append({
                     "type": "mention",
-                    "offset": name_length + 1,  # After first_name and space (English line)
+                    "offset": name_length + 1,
                     "length": len(username)
                 })
-                amharic_line_start = len(f"{first_name} {username} is eliminated due to unsupported behaviour.\n")
+                # Amharic line: Calculate exact offset for username
+                english_part = f"{first_name} {username} is eliminated due to unsupported behaviour.\n"
+                amharic_prefix = f"{first_name} "
+                second_offset = len(english_part) + len(amharic_prefix)
                 entities.append({
                     "type": "mention",
-                    "offset": amharic_line_start + name_length + 1,  # After first_name and space (Amharic line)
+                    "offset": second_offset,
                     "length": len(username)
                 })
             else:
-                # If no username, make first_name a clickable text_mention (applies to both English and Amharic lines)
+                # No username: Use text_mention for first_name
+                english_part = f"{first_name} is eliminated due to unsupported behaviour.\n"
                 entities.append({
                     "type": "text_mention",
                     "offset": 0,
                     "length": name_length,
-                    "user": user
+                    "user": {"id": user_id, "is_bot": False, "first_name": first_name}
                 })
                 entities.append({
                     "type": "text_mention",
-                    "offset": len(f"{first_name} {username} is eliminated due to unsupported behaviour.\n"),
+                    "offset": len(english_part),
                     "length": name_length,
-                    "user": user
+                    "user": {"id": user_id, "is_bot": False, "first_name": first_name}
                 })
             print(f"Entities for user {user_id}: {entities}")
+
             # Send message to group
-            await bot.send_message(
-                chat_id=GROUP_ID,
-                text=message_text,
-                entities=entities
-            )
+            try:
+                await bot.send_message(
+                    chat_id=GROUP_ID,
+                    text=message_text,
+                    entities=entities
+                )
+                print(f"Message sent successfully for user {user_id}")
+            except Exception as msg_e:
+                print(f"Message send failed for user {user_id}: {msg_e}")
+                # Fallback: Send without entities
+                fallback_text = message_text.replace(username, first_name)
+                await bot.send_message(
+                    chat_id=GROUP_ID,
+                    text=fallback_text
+                )
+                print(f"Fallback message sent for user {user_id}")
+
+            # Small delay to avoid rate limits
+            await asyncio.sleep(0.5)
+
             # Send sticker to group
+            sticker_id = "CAACAgEAAxkBAAE5E-xok7FWOS3t3jQUWxT3_Yw8QGgkNQACSQQAAmGwwEehsx6rufaXijYE"
             try:
                 print(f"Attempting to send sticker for user {user_id} ({first_name} {username})")
                 await bot.send_sticker(
                     chat_id=GROUP_ID,
-                    sticker="CAACAgEAAxkBAAE5E-xok7FWOS3t3jQUWxT3_Yw8QGgkNQACSQQAAmGwwEehsx6rufaXijYE"
+                    sticker=sticker_id
                 )
-            except Exception as e:
-                print(f"Failed to send sticker for user {user_id}: {e}")
+                print(f"Sticker sent successfully for user {user_id}")
+            except Exception as sticker_e:
+                print(f"Sticker send failed for user {user_id}: {sticker_e}")
+                # Fallback: Try a known good sticker
+                fallback_sticker = "CAADAgADBAADfyesDlKEqOOd72VKAg"  # Public sticker
+                try:
+                    await bot.send_sticker(
+                        chat_id=GROUP_ID,
+                        sticker=fallback_sticker
+                    )
+                    print(f"Fallback sticker sent for user {user_id}")
+                except Exception as fallback_e:
+                    print(f"Fallback sticker send failed for user {user_id}: {fallback_e}")
+
+            # Small delay to avoid rate limits
+            await asyncio.sleep(0.5)
+
             # Log to channel (plain text, no entities needed)
             removal_time = datetime.datetime.now(pytz.timezone('Africa/Nairobi')).strftime("%Y-%m-%d %H:%M:%S")
             channel_message = (
@@ -947,10 +985,15 @@ async def handle_chat_member_update(update: ChatMemberUpdated):
                 f"👤 ተጠቃሚ: {first_name} {username} (መለያ: {user_id})\n"
                 f"📝 ምክንያት: በአግባብ ባልሆነ ባህሪ ምክንያት ተወግዷል"
             )
-            await bot.send_message(
-                chat_id=CHANNEL_ID,
-                text=channel_message
-            )
+            try:
+                await bot.send_message(
+                    chat_id=CHANNEL_ID,
+                    text=channel_message
+                )
+                print(f"Channel message sent for user {user_id}")
+            except Exception as channel_e:
+                print(f"Channel message send failed for user {user_id}: {channel_e}")
+
             # Clean up user data
             async with active_matches_lock, waiting_users_lock, user_data_lock, cooldown_tracker_lock:
                 if user_id in active_matches:
@@ -959,15 +1002,18 @@ async def handle_chat_member_update(update: ChatMemberUpdated):
                     message_id_map.pop(user_id, None)
                     message_id_map.pop(partner_id, None)
                     if partner_id:
-                        await bot.send_message(
-                            chat_id=partner_id,
-                            text=(
-                                "❌ Your partner has been removed from the group. You can press 'Begin' to find a new partner.\n"
-                                "❌ አጋርህ ከቡድኑ ተወግዷል። አዲስ አጋር ለመፈለግ 'ጀምር' ን መጫን ትችላለህ።"
-                            ),
-                            reply_markup=get_main_keyboard(state="idle")
-                        )
-                        update_user_data_now(partner_id)
+                        try:
+                            await bot.send_message(
+                                chat_id=partner_id,
+                                text=(
+                                    "❌ Your partner has been removed from the group. You can press 'Begin' to find a new partner.\n"
+                                    "❌ አጋርህ ከቡድኑ ተወግዷል። አዲስ አጋር ለመፈለግ 'ጀምር' ን መጫን ትችላለህ።"
+                                ),
+                                reply_markup=get_main_keyboard(state="idle")
+                            )
+                            update_user_data_now(partner_id)
+                        except Exception as partner_e:
+                            print(f"Failed to notify partner {partner_id}: {partner_e}")
                 if user_id in waiting_users:
                     waiting_users.discard(user_id)
                     waiting_start_times.pop(user_id, None)
@@ -975,7 +1021,10 @@ async def handle_chat_member_update(update: ChatMemberUpdated):
                     del user_data[user_id]
                 if user_id in cooldown_tracker:
                     del cooldown_tracker[user_id]
-                update_user_data_now(user_id)  # Ensure user data is removed from MongoDB
+                try:
+                    update_user_data_now(user_id)  # Ensure user data is removed from MongoDB
+                except Exception as db_e:
+                    print(f"Failed to update user data for {user_id}: {db_e}")
             print(f"🚫 User {first_name} {username} (ID: {user_id}) removed from group and data cleaned up")
         except Exception as e:
             print(f"❌ Error handling user {user_id} removal: {e}")
@@ -989,15 +1038,18 @@ async def handle_chat_member_update(update: ChatMemberUpdated):
                     message_id_map.pop(user_id, None)
                     message_id_map.pop(partner_id, None)
                     if partner_id:
-                        await bot.send_message(
-                            chat_id=partner_id,
-                            text=(
-                                "❌ Your partner has left the group. You can press 'Begin' to find a new partner.\n"
-                                "❌ አጋርህ ቡድኑን ለቆ ወጥቷል። አዲስ አጋር ለመፈለግ 'ጀምር' ን መጫን ትችላለህ።"
-                            ),
-                            reply_markup=get_main_keyboard(state="idle")
-                        )
-                        update_user_data_now(partner_id)
+                        try:
+                            await bot.send_message(
+                                chat_id=partner_id,
+                                text=(
+                                    "❌ Your partner has left the group. You can press 'Begin' to find a new partner.\n"
+                                    "❌ አጋርህ ቡድኑን ለቆ ወጥቷል። አዲሸ አጋር ለመፈለግ 'ጀምር' ን መጫን ትችላለህ።"
+                                ),
+                                reply_markup=get_main_keyboard(state="idle")
+                            )
+                            update_user_data_now(partner_id)
+                        except Exception as partner_e:
+                            print(f"Failed to notify partner {partner_id}: {partner_e}")
                 if user_id in waiting_users:
                     waiting_users.discard(user_id)
                     waiting_start_times.pop(user_id, None)
@@ -1005,7 +1057,10 @@ async def handle_chat_member_update(update: ChatMemberUpdated):
                     del user_data[user_id]
                 if user_id in cooldown_tracker:
                     del cooldown_tracker[user_id]
-                update_user_data_now(user_id)  # Ensure user data is removed from MongoDB
+                try:
+                    update_user_data_now(user_id)  # Ensure user data is removed from MongoDB
+                except Exception as db_e:
+                    print(f"Failed to update user data for {user_id}: {db_e}")
             print(f"👋 User {first_name} {username} (ID: {user_id}) left the group voluntarily and data cleaned up")
         except Exception as e:
             print(f"❌ Error handling user {user_id} voluntary leave: {e}")
