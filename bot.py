@@ -1102,7 +1102,7 @@ async def handle_age_selection(callback: CallbackQuery):
             user_data[user_id] = {}
         user_data[user_id]["age"] = selected_age
         update_user_data_now(user_id)
-    await callback.answer(text=f"Your age is {selected_age}", show_alert=True)
+    await callback.answer(text=f"Your are {selected_age} years old", show_alert=True)
     if user_id in waiting_users and is_setup_complete(user_id)[0]:
         await attempt_match(user_id)
     await handle_gender(callback)
