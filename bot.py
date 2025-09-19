@@ -15,6 +15,8 @@ import asyncio
 import os
 import datetime
 from motor.motor_asyncio import AsyncIOMotorClient
+import time
+from pymongo.operations import ReplaceOne
 
 # Constants for limits
 MAX_ACTIVE_USERS = 2000
@@ -158,41 +160,46 @@ async def load_user_data():
     except Exception as e:
         print(f"❌ Error connecting to MongoDB: {e}")
 
-# Function to update a single user's data in MongoDB, including state
-async def update_user_data(user_id):
-    if user_id in user_data:
-        user_info = user_data[user_id].copy()
-        async with active_matches_lock:
-            if user_id in active_matches:
-                user_info["match_partner"] = active_matches[user_id]
-            else:
-                user_info["match_partner"] = None
-        async with waiting_users_lock:
-            if user_id in waiting_users:
-                user_info["waiting_since"] = waiting_start_times.get(user_id)
-            else:
-                user_info["waiting_since"] = None
-        for attempt in range(3):
-            try:
-                await users_collection.replace_one(
-                    {'_id': user_id},
-                    {'_id': user_id, **user_info},
-                    upsert=True
-                )
-                print(f"✅ Updated user {user_id} in MongoDB")
-                return
-            except Exception as e:
-                print(f"❌ Error updating user {user_id} in MongoDB (attempt {attempt+1}): {e}")
-                if attempt < 2:
-                    await asyncio.sleep(2 ** attempt)
-                else:
-                    print(f"❌ Failed to update user {user_id} after 3 attempts")
-    else:
-        print(f"⚠️ User {user_id} not found in user_data")
+# Optimized: Batch updates
+pending_updates = {}  # Collect updates
+last_batch_time = 0
 
-# Function for immediate (non-awaited) saving of a single user's data
-def update_user_data_now(user_id):
-    asyncio.create_task(update_user_data(user_id))
+async def batch_update_users():
+    global pending_updates, last_batch_time
+    now = time.time()
+    if pending_updates and (now - last_batch_time > 60):  # Batch every 60 seconds
+        user_ids = list(pending_updates.keys())
+        bulk_ops = []
+        for user_id in user_ids:
+            if user_id in user_data:
+                user_info = user_data[user_id].copy()
+                # Add match/waiting state
+                if user_id in active_matches:
+                    user_info["match_partner"] = active_matches[user_id]
+                else:
+                    user_info["match_partner"] = None
+                if user_id in waiting_users:
+                    user_info["waiting_since"] = waiting_start_times.get(user_id)
+                else:
+                    user_info["waiting_since"] = None
+                bulk_ops.append(
+                    ReplaceOne({'_id': user_id}, {'_id': user_id, **user_info}, upsert=True)
+                )
+        
+        if bulk_ops:
+            try:
+                await users_collection.bulk_write(bulk_ops)
+                print(f"✅ Batched {len(bulk_ops)} user updates")
+            except Exception as e:
+                print(f"❌ Batch update failed: {e}")
+        
+        pending_updates.clear()
+        last_batch_time = now
+
+# Replace all individual update calls
+def queue_user_update(user_id):
+    pending_updates[user_id] = True
+    asyncio.create_task(batch_update_users())
 
 # Helper function to check if a user is a group member
 async def is_group_member(user_id: int) -> bool:
@@ -396,7 +403,7 @@ async def start_searching(message: Message, user_id: int):
             return False
         waiting_start_times[user_id] = datetime.datetime.now()
         waiting_users.add(user_id)
-    update_user_data_now(user_id)  # Save waiting state immediately
+    queue_user_update(user_id)  # Save waiting state immediately
 
     await message.answer(
         "🔍 Waiting for a partner. You will be matched when a suitable partner is found.",
@@ -501,8 +508,8 @@ async def attempt_match(user_id):
                     print(f"❌ Error logging match to channel {CHANNEL_ID}: {e}")
                 
                 # Save match state immediately
-                update_user_data_now(user_id)
-                update_user_data_now(match_id)
+                queue_user_update(user_id)
+                queue_user_update(match_id)
                 return True
     return False
 
@@ -592,7 +599,7 @@ async def handle_matching_button(message: Message):
             if user_id in waiting_users:
                 waiting_users.remove(user_id)
                 waiting_start_times.pop(user_id, None)
-        update_user_data_now(user_id)  # Save state immediately
+        queue_user_update(user_id)  # Save state immediately
         await message.answer(
             "🛑 You have stopped searching.",
             reply_markup=get_main_keyboard(state="idle")
@@ -614,8 +621,8 @@ async def handle_matching_button(message: Message):
                 cooldown_tracker.setdefault(match_id, {})[user_id] = now + cooldown_period
                 message_id_map.pop(user_id, None)
                 message_id_map.pop(match_id, None)
-        update_user_data_now(user_id)  # Save state immediately
-        update_user_data_now(match_id)  # Save state immediately
+        queue_user_update(user_id)  # Save state immediately
+        queue_user_update(match_id)  # Save state immediately
         await message.answer(
             "❌ You have ended the session. You can press 'Begin' again to find a new partner.",
             reply_markup=get_main_keyboard(state="idle")
@@ -1002,7 +1009,7 @@ async def handle_chat_member_update(update: ChatMemberUpdated, bot: Bot):
                                 ),
                                 reply_markup=get_main_keyboard(state="idle")
                             )
-                            update_user_data_now(partner_id)
+                            queue_user_update(partner_id)
                         except Exception as partner_e:
                             print(f"Failed to notify partner {partner_id}: {partner_e}")
                 if user_id in waiting_users:
@@ -1013,7 +1020,7 @@ async def handle_chat_member_update(update: ChatMemberUpdated, bot: Bot):
                 if user_id in cooldown_tracker:
                     del cooldown_tracker[user_id]
                 try:
-                    update_user_data_now(user_id)  # Ensure user data is removed from MongoDB
+                    queue_user_update(user_id)  # Ensure user data is removed from MongoDB
                 except Exception as db_e:
                     print(f"Failed to update user data for {user_id}: {db_e}")
             print(f"🚫 User {first_name} {username} (ID: {user_id}) removed from group and data cleaned up")
@@ -1038,7 +1045,7 @@ async def handle_chat_member_update(update: ChatMemberUpdated, bot: Bot):
                                 ),
                                 reply_markup=get_main_keyboard(state="idle")
                             )
-                            update_user_data_now(partner_id)
+                            queue_user_update(partner_id)
                         except Exception as partner_e:
                             print(f"Failed to notify partner {partner_id}: {partner_e}")
                 if user_id in waiting_users:
@@ -1049,7 +1056,7 @@ async def handle_chat_member_update(update: ChatMemberUpdated, bot: Bot):
                 if user_id in cooldown_tracker:
                     del cooldown_tracker[user_id]
                 try:
-                    update_user_data_now(user_id)  # Ensure user data is removed from MongoDB
+                    queue_user_update(user_id)  # Ensure user data is removed from MongoDB
                 except Exception as db_e:
                     print(f"Failed to update user data for {user_id}: {db_e}")
             print(f"👋 User {first_name} {username} (ID: {user_id}) left the group voluntarily and data cleaned up")
@@ -1101,7 +1108,7 @@ async def handle_age_selection(callback: CallbackQuery):
         if user_id not in user_data:
             user_data[user_id] = {}
         user_data[user_id]["age"] = selected_age
-        update_user_data_now(user_id)
+        queue_user_update(user_id)
     await callback.answer(text=f"You are {selected_age} years old.", show_alert=True)
     if user_id in waiting_users and is_setup_complete(user_id)[0]:
         await attempt_match(user_id)
@@ -1115,7 +1122,7 @@ async def handle_gender_selection(callback: CallbackQuery):
         if user_id not in user_data:
             user_data[user_id] = {}
         user_data[user_id]["gender"] = selected_gender
-        update_user_data_now(user_id)
+        queue_user_update(user_id)
     await callback.answer(text=f"You selected {selected_gender}", show_alert=True)
     if user_id in waiting_users and is_setup_complete(user_id)[0]:
         await attempt_match(user_id)
@@ -1129,7 +1136,7 @@ async def handle_religion_selection(callback: CallbackQuery):
         if user_id not in user_data:
             user_data[user_id] = {}
         user_data[user_id]["religion"] = selected_religion
-        update_user_data_now(user_id)
+        queue_user_update(user_id)
     selected_age = user_data[user_id].get("age", "Not set")
     selected_gender = user_data[user_id].get("gender", "Not set")
     selected_religion = user_data[user_id].get("religion", "Not set")
@@ -1169,7 +1176,7 @@ async def handle_partner_maximum_age(callback: CallbackQuery):
         if "partner" not in user_data[user_id]:
             user_data[user_id]["partner"] = {}
         user_data[user_id]["partner"]["min_age"] = min_age
-        update_user_data_now(user_id)
+        queue_user_update(user_id)
     if user_id in waiting_users and is_setup_complete(user_id)[0]:
         await attempt_match(user_id)
     max_age_keyboard = InlineKeyboardMarkup(
@@ -1206,7 +1213,7 @@ async def handle_partner_age_range(callback: CallbackQuery):
             )
             return
         user_data[user_id]["partner"]["max_age"] = max_age
-        update_user_data_now(user_id)
+        queue_user_update(user_id)
     await callback.answer(text=f"🎉 Partner age range set: from {min_age} to {max_age}", show_alert=True)
     if user_id in waiting_users and is_setup_complete(user_id)[0]:
         await attempt_match(user_id)
@@ -1234,7 +1241,7 @@ async def handle_partner_gender_selection(callback: CallbackQuery):
         if "partner" not in user_data[user_id]:
             user_data[user_id]["partner"] = {}
         user_data[user_id]["partner"]["gender"] = selected_gender
-        update_user_data_now(user_id)
+        queue_user_update(user_id)
     await callback.answer(text=f"🎉 Partner gender set to: {selected_gender.capitalize()}", show_alert=True)
     if user_id in waiting_users and is_setup_complete(user_id)[0]:
         await attempt_match(user_id)
@@ -1264,7 +1271,7 @@ async def handle_partner_religion_selection(callback: CallbackQuery):
         if "partner" not in user_data[user_id]:
             user_data[user_id]["partner"] = {}
         user_data[user_id]["partner"]["religion"] = selected_partner_religion
-        update_user_data_now(user_id)
+        queue_user_update(user_id)
     partner_min_age = user_data[user_id]["partner"].get("min_age", "Not set")
     partner_max_age = user_data[user_id]["partner"].get("max_age", "Not set")
     partner_gender = user_data[user_id]["partner"].get("gender", "Not set")
@@ -1342,7 +1349,7 @@ async def cleanup_cooldown_tracker():
 # Periodic save task
 async def periodic_save():
     while True:
-        await asyncio.sleep(60)
+        await asyncio.sleep(300)
         await save_user_data()
         print("🔄 Periodic backup of user data performed")
 
