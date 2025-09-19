@@ -25,7 +25,7 @@ from aiohttp import web
 from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
 
 # Constants for limits
-MAX_ACTIVE_USERS = 2000
+MAX_ACTIVE_USERS = 1000
 MAX_CONCURRENT_MATCHES = 100
 
 # Locks for synchronization
