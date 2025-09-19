@@ -17,6 +17,12 @@ import datetime
 from motor.motor_asyncio import AsyncIOMotorClient
 import time
 from pymongo.operations import ReplaceOne
+import logging
+import sys
+import threading
+import requests
+from aiohttp import web
+from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
 
 # Constants for limits
 MAX_ACTIVE_USERS = 2000
@@ -1361,34 +1367,83 @@ async def periodic_match_check():
             print(f"🔄 Checking for matches among {len(waiting_users)} waiting users")
             await try_match_queued_users()
 
-# Main function
-async def main():
-    await load_user_data()
-    print("🤖 Bot is running...")
-    print("💾 Individual data points will be saved immediately upon changes")
-    print("💾 Automatic backups will be performed every minute")
-    print("🔄 Matching checks for queued users will be performed every 30 seconds")
-    await set_bot_commands()
-    periodic_save_task = asyncio.create_task(periodic_save())
-    periodic_match_task = asyncio.create_task(periodic_match_check())
-    cleanup_task = asyncio.create_task(cleanup_cooldown_tracker())
-    try:
-        async with bot:
-            await dp.start_polling(bot, allowed_updates=['message', 'callback_query', 'chat_member'])
-    except KeyboardInterrupt:
-        await save_user_data()
-        print("💾 Final save completed before shutdown")
-    finally:
-        periodic_save_task.cancel()
-        periodic_match_task.cancel()
-        cleanup_task.cancel()
+# Add these new constants after BOT_TOKEN etc.
+WEBHOOK_PATH = '/webhook'
+WEBHOOK_SECRET = os.getenv('WEBHOOK_SECRET', '')  # From env; empty disables secret
+KOYEB_PUBLIC_DOMAIN = os.getenv('KOYEB_PUBLIC_DOMAIN')
+if not KOYEB_PUBLIC_DOMAIN:
+    raise ValueError("KOYEB_PUBLIC_DOMAIN not set in environment variables.")
+WEBHOOK_URL = f"https://{KOYEB_PUBLIC_DOMAIN}{WEBHOOK_PATH}"
+WEBAPP_HOST = '0.0.0.0'
+WEBAPP_PORT = int(os.getenv('PORT', 8080))
+
+# Add keep_alive function (copied/adapted from your old app.py)
+def keep_alive():
+    url = f"https://{KOYEB_PUBLIC_DOMAIN}"
+    while True:
         try:
-            await periodic_save_task
-            await periodic_match_task
-            await cleanup_task
-        except asyncio.CancelledError:
-            pass
-        print("👋 Bot has been gracefully shut down")
+            response = requests.get(url, timeout=10)
+            if response.status_code == 200:
+                print(f"Successfully pinged {url} to keep alive")
+            else:
+                print(f"Ping to {url} returned status code {response.status_code}")
+        except requests.RequestException as e:
+            print(f"Ping to {url} failed: {e}")
+        time.sleep(300)  # Every 5 minutes
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    logging.basicConfig(level=logging.INFO, stream=sys.stdout)
+    
+    # Start keep-alive thread to prevent sleep on Koyeb free tier
+    threading.Thread(target=keep_alive, daemon=True).start()
+    
+    # Create aiohttp app for webhook
+    app = web.Application()
+    
+    # Set up aiogram webhook handler
+    webhook_requests_handler = SimpleRequestHandler(
+        dispatcher=dp,
+        bot=bot,
+        secret_token=WEBHOOK_SECRET if WEBHOOK_SECRET else None,
+        handle_in_background=True  # Respond immediately to Telegram for better perf
+    )
+    webhook_requests_handler.register(app, path=WEBHOOK_PATH)
+    
+    # Integrate aiogram setup (e.g., bot session close on shutdown)
+    setup_application(app, dp, bot=bot)
+    
+    # Add health check route (Koyeb pings this for liveness)
+    async def health(request):
+        return web.Response(text='Hello from Koyeb')
+    
+    app.router.add_get('/', health)
+    
+    # On startup: Load data, set commands, set webhook
+    async def on_startup(app):
+        await load_user_data()
+        await set_bot_commands()
+        await bot.set_webhook(
+            url=WEBHOOK_URL,
+            secret_token=WEBHOOK_SECRET if WEBHOOK_SECRET else None,
+            drop_pending_updates=True  # Ignore old polling updates
+        )
+        print(f"Webhook set to {WEBHOOK_URL}")
+    
+    app.on_startup.append(on_startup)
+    
+    # On shutdown: Clean up webhook, save data, cancel tasks
+    async def on_shutdown(app):
+        await bot.delete_webhook()
+        await save_user_data()
+        print("Webhook deleted and final save completed")
+    
+    app.on_shutdown.append(on_shutdown)
+    
+    # Start periodic background tasks (your existing ones)
+    loop = asyncio.get_event_loop()
+    periodic_save_task = loop.create_task(periodic_save())
+    periodic_match_task = loop.create_task(periodic_match_check())
+    cleanup_task = loop.create_task(cleanup_cooldown_tracker())
+    
+    # Run the aiohttp server
+    web.run_app(app, host=WEBAPP_HOST, port=WEBAPP_PORT)
