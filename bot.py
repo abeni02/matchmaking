@@ -32,10 +32,10 @@ MAX_ACTIVE_USERS = 1000
 MAX_CONCURRENT_MATCHES = 100
 
 # Locks for synchronization
-user_data_lock = asyncio.RLock()
-active_matches_lock = asyncio.RLock()
-waiting_users_lock = asyncio.RLock()
-cooldown_tracker_lock = asyncio.RLock()
+user_data_lock = asyncio.Lock()
+active_matches_lock = asyncio.Lock()
+waiting_users_lock = asyncio.Lock()
+cooldown_tracker_lock = asyncio.Lock()
 
 # Set bot commands for private chats only
 async def set_bot_commands():
