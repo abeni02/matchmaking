@@ -1440,6 +1440,8 @@ def keep_alive():
             print(f"Ping to {url} failed: {e}")
         time.sleep(300)  # Every 5 minutes
 
+# ... (rest of the code unchanged)
+
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, stream=sys.stdout)
     
@@ -1491,8 +1493,11 @@ if __name__ == "__main__":
     
     app.on_shutdown.append(on_shutdown)
     
-    # Start periodic background tasks (your existing ones)
-    loop = asyncio.get_event_loop()
+    # Create and set a new event loop to avoid deprecation warning
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    
+    # Start periodic background tasks
     periodic_save_task = loop.create_task(periodic_save())
     event_match_task = loop.create_task(event_driven_match())
     cleanup_task = loop.create_task(cleanup_cooldown_tracker())
