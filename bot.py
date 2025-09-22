@@ -23,6 +23,9 @@ import threading
 import requests
 from aiohttp import web
 from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
+from collections import defaultdict
+import heapq
+import pytz
 
 # Constants for limits
 MAX_ACTIVE_USERS = 1000
@@ -33,6 +36,7 @@ user_data_lock = asyncio.Lock()
 active_matches_lock = asyncio.Lock()
 waiting_users_lock = asyncio.Lock()
 cooldown_tracker_lock = asyncio.Lock()
+matching_lock = asyncio.Lock()
 
 # Set bot commands for private chats only
 async def set_bot_commands():
@@ -82,6 +86,18 @@ cooldown_tracker = {}
 waiting_users = set()
 waiting_start_times = {}
 message_id_map = {}
+
+# Efficiency: Bucket waiting users by (gender, religion)
+waiting_buckets = defaultdict(set)
+
+# Efficiency: Priority queue for waiting users by wait time
+waiting_heap = []  # [(wait_time, user_id)]
+
+# Efficiency: Event for event-driven matching
+match_event = asyncio.Event()
+
+# Efficiency: Queue for batching channel logs
+channel_log_queue = []
 
 # Button texts
 BEGIN_TEXT = "🚀 Begin"
@@ -152,6 +168,10 @@ async def load_user_data():
                 if waiting_since:
                     waiting_users.add(user_id)
                     waiting_start_times[user_id] = waiting_since
+                    heapq.heappush(waiting_heap, (waiting_since, user_id))
+                    prefs = user_data[user_id]
+                    key = (prefs.get('gender', 'Not set').lower(), prefs.get('religion', 'Not set').lower())
+                    waiting_buckets[key].add(user_id)
             except Exception as e:
                 print(f"❌ Error loading user {document.get('_id', 'unknown')}: {e}")
         async with active_matches_lock:
@@ -166,14 +186,15 @@ async def load_user_data():
     except Exception as e:
         print(f"❌ Error connecting to MongoDB: {e}")
 
-# Optimized: Batch updates
+# Optimized: Batch updates - Smarter batching with threshold
 pending_updates = {}  # Collect updates
 last_batch_time = 0
+BATCH_THRESHOLD = 50
 
 async def batch_update_users():
     global pending_updates, last_batch_time
     now = time.time()
-    if pending_updates and (now - last_batch_time > 60):  # Batch every 60 seconds
+    if len(pending_updates) >= BATCH_THRESHOLD or (pending_updates and (now - last_batch_time > 60)):
         user_ids = list(pending_updates.keys())
         bulk_ops = []
         for user_id in user_ids:
@@ -407,8 +428,13 @@ async def start_searching(message: Message, user_id: int):
                 reply_markup=get_main_keyboard(state="idle")
             )
             return False
-        waiting_start_times[user_id] = datetime.datetime.now()
+        waiting_time = datetime.datetime.now()
+        waiting_start_times[user_id] = waiting_time
         waiting_users.add(user_id)
+        heapq.heappush(waiting_heap, (waiting_time, user_id))
+        prefs = user_data.get(user_id, {})
+        bucket_key = (prefs.get('gender', 'Not set').lower(), prefs.get('religion', 'Not set').lower())
+        waiting_buckets[bucket_key].add(user_id)
     queue_user_update(user_id)  # Save waiting state immediately
 
     await message.answer(
@@ -417,11 +443,13 @@ async def start_searching(message: Message, user_id: int):
     )
 
     if await can_attempt_match():
-        await attempt_match(user_id)
+        async with matching_lock:
+            await attempt_match(user_id)
     else:
         await message.answer(
             "⏳ The current number of active matches has reached the maximum (300). You will be matched when a slot becomes available."
         )
+    match_event.set()
     return True
 
 # Modified attempt_match with immediate state update
@@ -430,7 +458,17 @@ async def attempt_match(user_id):
     async with waiting_users_lock:
         if user_id not in waiting_users:
             return False
-        candidates = list(waiting_users - {user_id})
+        # Use buckets to filter candidates
+        async with user_data_lock:
+            user_prefs = user_data.get(user_id, {})
+        partner_gender = user_prefs.get("partner", {}).get("gender", "any").lower()
+        partner_religion = user_prefs.get("partner", {}).get("religion", "any").lower()
+        possible_buckets = []
+        for key in waiting_buckets:
+            b_gender, b_religion = key
+            if (partner_gender == "any" or partner_gender == b_gender) and (partner_religion == "any" or partner_religion == b_religion):
+                possible_buckets.extend(list(waiting_buckets[key]))
+        candidates = list(set(possible_buckets) - {user_id})
     async with user_data_lock:
         user_prefs = user_data.get(user_id, {})
         candidate_prefs = {cid: user_data.get(cid, {}) for cid in candidates}
@@ -451,6 +489,13 @@ async def attempt_match(user_id):
                 waiting_users.discard(match_id)
                 waiting_start_times.pop(user_id, None)
                 waiting_start_times.pop(match_id, None)
+                # Remove from heap (rebuild to avoid complexity)
+                waiting_heap[:] = [item for item in waiting_heap if item[1] not in (user_id, match_id)]
+                heapq.heapify(waiting_heap)
+                # Remove from buckets
+                for bucket in waiting_buckets.values():
+                    bucket.discard(user_id)
+                    bucket.discard(match_id)
 
                 user_data_1 = user_data[user_id]
                 user_data_2 = user_data[match_id]
@@ -516,6 +561,7 @@ async def attempt_match(user_id):
                 # Save match state immediately
                 queue_user_update(user_id)
                 queue_user_update(match_id)
+                match_event.set()  # Trigger to check if others can match now
                 return True
     return False
 
@@ -605,11 +651,18 @@ async def handle_matching_button(message: Message):
             if user_id in waiting_users:
                 waiting_users.remove(user_id)
                 waiting_start_times.pop(user_id, None)
+                waiting_heap[:] = [item for item in waiting_heap if item[1] != user_id]
+                heapq.heapify(waiting_heap)
+                for key in list(waiting_buckets):
+                    waiting_buckets[key].discard(user_id)
+                    if not waiting_buckets[key]:
+                        del waiting_buckets[key]
         queue_user_update(user_id)  # Save state immediately
         await message.answer(
             "🛑 You have stopped searching.",
             reply_markup=get_main_keyboard(state="idle")
         )
+        match_event.set()
     elif text == END_CHAT_TEXT or text == "/end":
         if current_state != "chatting":
             await message.answer(
@@ -625,6 +678,8 @@ async def handle_matching_button(message: Message):
                 now = datetime.datetime.now()
                 cooldown_tracker.setdefault(user_id, {})[match_id] = now + cooldown_period
                 cooldown_tracker.setdefault(match_id, {})[user_id] = now + cooldown_period
+                heapq.heappush(cooldown_heap, (now + cooldown_period, user_id, match_id))
+                heapq.heappush(cooldown_heap, (now + cooldown_period, match_id, user_id))
                 message_id_map.pop(user_id, None)
                 message_id_map.pop(match_id, None)
         queue_user_update(user_id)  # Save state immediately
@@ -638,7 +693,7 @@ async def handle_matching_button(message: Message):
             text="❌ Your partner has ended the session. You can press 'Begin' again to find a new partner.",
             reply_markup=get_main_keyboard(state="idle")
         )
-        asyncio.create_task(try_match_queued_users())
+        match_event.set()
 
 # Handle "Help" button or command
 @router.message(F.chat.type == "private", F.text.in_({"❓ Help", "/help"}))
@@ -825,54 +880,24 @@ async def forward_messages(message: Message):
             print(f"❌ Error forwarding message from {user_id} to {partner_id}: {e}")
             await message.answer("⚠️ Failed to send message. Please try again later.")
 
-        try:
-            await bot.send_message(
-                chat_id=CHANNEL_ID,
-                text=channel_message
-            )
-            if message.photo:
-                await bot.send_photo(
-                    chat_id=CHANNEL_ID,
-                    photo=message.photo[-1].file_id,
-                    caption=message.caption or ""
-                )
-            elif message.document:
-                await bot.send_document(
-                    chat_id=CHANNEL_ID,
-                    document=message.document.file_id,
-                    caption=message.caption or ""
-                )
-            elif message.video:
-                await bot.send_video(
-                    chat_id=CHANNEL_ID,
-                    video=message.video.file_id,
-                    caption=message.caption or ""
-                )
-            elif message.audio:
-                await bot.send_audio(
-                    chat_id=CHANNEL_ID,
-                    audio=message.audio.file_id,
-                    caption=message.caption or ""
-                )
-            elif message.voice:
-                await bot.send_voice(
-                    chat_id=CHANNEL_ID,
-                    voice=message.voice.file_id,
-                    caption=message.caption or ""
-                )
-            elif message.video_note:
-                await bot.send_video_note(
-                    chat_id=CHANNEL_ID,
-                    video_note=message.video_note.file_id
-                )
-            elif message.sticker:
-                await bot.send_sticker(
-                    chat_id=CHANNEL_ID,
-                    sticker=message.sticker.file_id
-                )
-            print(f"📢 Message from user {user_id} to {partner_id} logged to channel {CHANNEL_ID}")
-        except Exception as e:
-            print(f"❌ Error logging message to channel {CHANNEL_ID}: {e}")
+        # Batch channel logs
+        media_send = None
+        if message.photo:
+            media_send = lambda: bot.send_photo(chat_id=CHANNEL_ID, photo=message.photo[-1].file_id, caption=message.caption or "")
+        elif message.document:
+            media_send = lambda: bot.send_document(chat_id=CHANNEL_ID, document=message.document.file_id, caption=message.caption or "")
+        elif message.video:
+            media_send = lambda: bot.send_video(chat_id=CHANNEL_ID, video=message.video.file_id, caption=message.caption or "")
+        elif message.audio:
+            media_send = lambda: bot.send_audio(chat_id=CHANNEL_ID, audio=message.audio.file_id, caption=message.caption or "")
+        elif message.voice:
+            media_send = lambda: bot.send_voice(chat_id=CHANNEL_ID, voice=message.voice.file_id, caption=message.caption or "")
+        elif message.video_note:
+            media_send = lambda: bot.send_video_note(chat_id=CHANNEL_ID, video_note=message.video_note.file_id)
+        elif message.sticker:
+            media_send = lambda: bot.send_sticker(chat_id=CHANNEL_ID, sticker=message.sticker.file_id)
+        channel_log_queue.append((channel_message, media_send))
+        print(f"📢 Message from user {user_id} to {partner_id} logged to channel {CHANNEL_ID}")
     elif current_state == "searching":
         await message.answer(
             "🔍 You are already searching for a partner. Please wait.",
@@ -883,7 +908,7 @@ async def forward_messages(message: Message):
             "⚠️ You are not currently chatting with anyone. Press 'Begin' to find a partner.",
             reply_markup=get_main_keyboard(state="idle")
         )
-  #       
+       
 @router.chat_member(F.chat.id == int(GROUP_ID))
 async def handle_chat_member_update(update: ChatMemberUpdated, bot: Bot):
     old_status = update.old_chat_member.status
@@ -1117,7 +1142,8 @@ async def handle_age_selection(callback: CallbackQuery):
         queue_user_update(user_id)
     await callback.answer(text=f"You are {selected_age} years old.", show_alert=True)
     if user_id in waiting_users and is_setup_complete(user_id)[0]:
-        await attempt_match(user_id)
+        async with matching_lock:
+            await attempt_match(user_id)
     await handle_gender(callback)
 
 @router.callback_query(F.data.startswith("selected_gender_"))
@@ -1131,7 +1157,8 @@ async def handle_gender_selection(callback: CallbackQuery):
         queue_user_update(user_id)
     await callback.answer(text=f"You selected {selected_gender}", show_alert=True)
     if user_id in waiting_users and is_setup_complete(user_id)[0]:
-        await attempt_match(user_id)
+        async with matching_lock:
+            await attempt_match(user_id)
     await handle_religion(callback)
 
 @router.callback_query(F.data.startswith("selected_religion_"))
@@ -1156,7 +1183,8 @@ async def handle_religion_selection(callback: CallbackQuery):
         )
     )
     if user_id in waiting_users and is_setup_complete(user_id)[0]:
-        await attempt_match(user_id)
+        async with matching_lock:
+            await attempt_match(user_id)
     await asyncio.sleep(5)
     await handle_back_to_setup(callback)
 
@@ -1184,7 +1212,8 @@ async def handle_partner_maximum_age(callback: CallbackQuery):
         user_data[user_id]["partner"]["min_age"] = min_age
         queue_user_update(user_id)
     if user_id in waiting_users and is_setup_complete(user_id)[0]:
-        await attempt_match(user_id)
+        async with matching_lock:
+            await attempt_match(user_id)
     max_age_keyboard = InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text=str(age), callback_data=f"partner_max_age_{age}") for age in range(row_start, row_start + 5) if age >= min_age]
@@ -1222,7 +1251,8 @@ async def handle_partner_age_range(callback: CallbackQuery):
         queue_user_update(user_id)
     await callback.answer(text=f"🎉 Partner age range set: from {min_age} to {max_age}", show_alert=True)
     if user_id in waiting_users and is_setup_complete(user_id)[0]:
-        await attempt_match(user_id)
+        async with matching_lock:
+            await attempt_match(user_id)
     await handle_partner_gender(callback)
 
 @router.callback_query(F.data == "partner_gender")
@@ -1250,7 +1280,8 @@ async def handle_partner_gender_selection(callback: CallbackQuery):
         queue_user_update(user_id)
     await callback.answer(text=f"🎉 Partner gender set to: {selected_gender.capitalize()}", show_alert=True)
     if user_id in waiting_users and is_setup_complete(user_id)[0]:
-        await attempt_match(user_id)
+        async with matching_lock:
+            await attempt_match(user_id)
     await handle_partner_religion(callback)
 
 @router.callback_query(F.data == "partner_religion")
@@ -1292,7 +1323,8 @@ async def handle_partner_religion_selection(callback: CallbackQuery):
         )
     )
     if user_id in waiting_users and is_setup_complete(user_id)[0]:
-        await attempt_match(user_id)
+        async with matching_lock:
+            await attempt_match(user_id)
     await asyncio.sleep(5)
     await handle_back_to_setup(callback)
 
@@ -1330,24 +1362,25 @@ async def try_match_queued_users():
     if not await can_attempt_match():
         print(f"⚠️ Cannot match queued users: limits reached (active users: {len(waiting_users) + len(active_matches)}, matches: {len(active_matches) // 2})")
         return
-    sorted_waiting_users = sorted(
-        waiting_users,
-        key=lambda x: waiting_start_times.get(x, datetime.datetime.now())
-    )
-    for user_id in sorted_waiting_users:
-        if user_id in waiting_users and is_setup_complete(user_id)[0]:
-            await attempt_match(user_id)
+    async with matching_lock:
+        heap_copy = list(waiting_heap)
+        while heap_copy:
+            _, user_id = heapq.heappop(heap_copy)
+            if user_id in waiting_users and is_setup_complete(user_id)[0]:
+                await attempt_match(user_id)
 
 # Periodic task to clean up expired cooldown entries
+cooldown_heap = []  # [(expiration, user_id, partner_id)]
+
 async def cleanup_cooldown_tracker():
     while True:
         await asyncio.sleep(300)  # every 5 minutes
         now = datetime.datetime.now()
         async with cooldown_tracker_lock:
-            for user_id in list(cooldown_tracker.keys()):
-                for partner_id in list(cooldown_tracker[user_id].keys()):
-                    if cooldown_tracker[user_id][partner_id] < now:
-                        del cooldown_tracker[user_id][partner_id]
+            while cooldown_heap and cooldown_heap[0][0] < now:
+                _, user_id, partner_id = heapq.heappop(cooldown_heap)
+                if user_id in cooldown_tracker and partner_id in cooldown_tracker[user_id] and cooldown_tracker[user_id][partner_id] < now:
+                    del cooldown_tracker[user_id][partner_id]
                 if not cooldown_tracker[user_id]:
                     del cooldown_tracker[user_id]
         print("🧹 Cleaned up expired cooldown entries")
@@ -1359,13 +1392,29 @@ async def periodic_save():
         await save_user_data()
         print("🔄 Periodic backup of user data performed")
 
-# Periodic match check task
-async def periodic_match_check():
+# Event-driven match check
+async def event_driven_match():
     while True:
-        await asyncio.sleep(30)
+        await match_event.wait()
         if waiting_users:
             print(f"🔄 Checking for matches among {len(waiting_users)} waiting users")
             await try_match_queued_users()
+        match_event.clear()
+
+# Batch flush for channel logs
+async def flush_channel_logs():
+    while True:
+        await asyncio.sleep(30)
+        if channel_log_queue:
+            logs = channel_log_queue.copy()
+            channel_log_queue.clear()
+            for msg, media in logs:
+                try:
+                    await bot.send_message(chat_id=CHANNEL_ID, text=msg)
+                    if media:
+                        await media()
+                except Exception as e:
+                    print(f"❌ Error logging to channel: {e}")
 
 # Add these new constants after BOT_TOKEN etc.
 WEBHOOK_PATH = '/webhook'
@@ -1390,6 +1439,8 @@ def keep_alive():
         except requests.RequestException as e:
             print(f"Ping to {url} failed: {e}")
         time.sleep(300)  # Every 5 minutes
+
+# ... (rest of the code unchanged)
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, stream=sys.stdout)
@@ -1422,6 +1473,9 @@ if __name__ == "__main__":
     async def on_startup(app):
         await load_user_data()
         await set_bot_commands()
+        await users_collection.create_index("_id")
+        await users_collection.create_index("match_partner")
+        await users_collection.create_index("waiting_since")
         await bot.set_webhook(
             url=WEBHOOK_URL,
             secret_token=WEBHOOK_SECRET if WEBHOOK_SECRET else None,
@@ -1439,11 +1493,15 @@ if __name__ == "__main__":
     
     app.on_shutdown.append(on_shutdown)
     
-    # Start periodic background tasks (your existing ones)
-    loop = asyncio.get_event_loop()
+    # Create and set a new event loop to avoid deprecation warning
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    
+    # Start periodic background tasks
     periodic_save_task = loop.create_task(periodic_save())
-    periodic_match_task = loop.create_task(periodic_match_check())
+    event_match_task = loop.create_task(event_driven_match())
     cleanup_task = loop.create_task(cleanup_cooldown_tracker())
+    flush_logs_task = loop.create_task(flush_channel_logs())
     
     # Run the aiohttp server
     web.run_app(app, host=WEBAPP_HOST, port=WEBAPP_PORT)
