@@ -36,6 +36,7 @@ user_data_lock = asyncio.Lock()
 active_matches_lock = asyncio.Lock()
 waiting_users_lock = asyncio.Lock()
 cooldown_tracker_lock = asyncio.Lock()
+matching_lock = asyncio.Lock()
 
 # Set bot commands for private chats only
 async def set_bot_commands():
@@ -442,7 +443,8 @@ async def start_searching(message: Message, user_id: int):
     )
 
     if await can_attempt_match():
-        await attempt_match(user_id)
+        async with matching_lock:
+            await attempt_match(user_id)
     else:
         await message.answer(
             "⏳ The current number of active matches has reached the maximum (300). You will be matched when a slot becomes available."
@@ -559,6 +561,7 @@ async def attempt_match(user_id):
                 # Save match state immediately
                 queue_user_update(user_id)
                 queue_user_update(match_id)
+                match_event.set()  # Trigger to check if others can match now
                 return True
     return False
 
@@ -648,7 +651,7 @@ async def handle_matching_button(message: Message):
             if user_id in waiting_users:
                 waiting_users.remove(user_id)
                 waiting_start_times.pop(user_id, None)
-                waiting_heap = [item for item in waiting_heap if item[1] != user_id]
+                waiting_heap[:] = [item for item in waiting_heap if item[1] != user_id]
                 heapq.heapify(waiting_heap)
                 for key in list(waiting_buckets):
                     waiting_buckets[key].discard(user_id)
@@ -690,7 +693,6 @@ async def handle_matching_button(message: Message):
             text="❌ Your partner has ended the session. You can press 'Begin' again to find a new partner.",
             reply_markup=get_main_keyboard(state="idle")
         )
-        asyncio.create_task(try_match_queued_users())
         match_event.set()
 
 # Handle "Help" button or command
@@ -906,7 +908,7 @@ async def forward_messages(message: Message):
             "⚠️ You are not currently chatting with anyone. Press 'Begin' to find a partner.",
             reply_markup=get_main_keyboard(state="idle")
         )
-  #       
+       
 @router.chat_member(F.chat.id == int(GROUP_ID))
 async def handle_chat_member_update(update: ChatMemberUpdated, bot: Bot):
     old_status = update.old_chat_member.status
@@ -1140,7 +1142,8 @@ async def handle_age_selection(callback: CallbackQuery):
         queue_user_update(user_id)
     await callback.answer(text=f"You are {selected_age} years old.", show_alert=True)
     if user_id in waiting_users and is_setup_complete(user_id)[0]:
-        await attempt_match(user_id)
+        async with matching_lock:
+            await attempt_match(user_id)
     await handle_gender(callback)
 
 @router.callback_query(F.data.startswith("selected_gender_"))
@@ -1154,7 +1157,8 @@ async def handle_gender_selection(callback: CallbackQuery):
         queue_user_update(user_id)
     await callback.answer(text=f"You selected {selected_gender}", show_alert=True)
     if user_id in waiting_users and is_setup_complete(user_id)[0]:
-        await attempt_match(user_id)
+        async with matching_lock:
+            await attempt_match(user_id)
     await handle_religion(callback)
 
 @router.callback_query(F.data.startswith("selected_religion_"))
@@ -1179,7 +1183,8 @@ async def handle_religion_selection(callback: CallbackQuery):
         )
     )
     if user_id in waiting_users and is_setup_complete(user_id)[0]:
-        await attempt_match(user_id)
+        async with matching_lock:
+            await attempt_match(user_id)
     await asyncio.sleep(5)
     await handle_back_to_setup(callback)
 
@@ -1207,7 +1212,8 @@ async def handle_partner_maximum_age(callback: CallbackQuery):
         user_data[user_id]["partner"]["min_age"] = min_age
         queue_user_update(user_id)
     if user_id in waiting_users and is_setup_complete(user_id)[0]:
-        await attempt_match(user_id)
+        async with matching_lock:
+            await attempt_match(user_id)
     max_age_keyboard = InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text=str(age), callback_data=f"partner_max_age_{age}") for age in range(row_start, row_start + 5) if age >= min_age]
@@ -1245,7 +1251,8 @@ async def handle_partner_age_range(callback: CallbackQuery):
         queue_user_update(user_id)
     await callback.answer(text=f"🎉 Partner age range set: from {min_age} to {max_age}", show_alert=True)
     if user_id in waiting_users and is_setup_complete(user_id)[0]:
-        await attempt_match(user_id)
+        async with matching_lock:
+            await attempt_match(user_id)
     await handle_partner_gender(callback)
 
 @router.callback_query(F.data == "partner_gender")
@@ -1273,7 +1280,8 @@ async def handle_partner_gender_selection(callback: CallbackQuery):
         queue_user_update(user_id)
     await callback.answer(text=f"🎉 Partner gender set to: {selected_gender.capitalize()}", show_alert=True)
     if user_id in waiting_users and is_setup_complete(user_id)[0]:
-        await attempt_match(user_id)
+        async with matching_lock:
+            await attempt_match(user_id)
     await handle_partner_religion(callback)
 
 @router.callback_query(F.data == "partner_religion")
@@ -1315,7 +1323,8 @@ async def handle_partner_religion_selection(callback: CallbackQuery):
         )
     )
     if user_id in waiting_users and is_setup_complete(user_id)[0]:
-        await attempt_match(user_id)
+        async with matching_lock:
+            await attempt_match(user_id)
     await asyncio.sleep(5)
     await handle_back_to_setup(callback)
 
@@ -1353,11 +1362,12 @@ async def try_match_queued_users():
     if not await can_attempt_match():
         print(f"⚠️ Cannot match queued users: limits reached (active users: {len(waiting_users) + len(active_matches)}, matches: {len(active_matches) // 2})")
         return
-    heap_copy = list(waiting_heap)
-    while heap_copy:
-        _, user_id = heapq.heappop(heap_copy)
-        if user_id in waiting_users and is_setup_complete(user_id)[0]:
-            await attempt_match(user_id)
+    async with matching_lock:
+        heap_copy = list(waiting_heap)
+        while heap_copy:
+            _, user_id = heapq.heappop(heap_copy)
+            if user_id in waiting_users and is_setup_complete(user_id)[0]:
+                await attempt_match(user_id)
 
 # Periodic task to clean up expired cooldown entries
 cooldown_heap = []  # [(expiration, user_id, partner_id)]
@@ -1396,14 +1406,13 @@ async def flush_channel_logs():
     while True:
         await asyncio.sleep(30)
         if channel_log_queue:
-            async with asyncio.Lock():
-                logs = channel_log_queue.copy()
-                channel_log_queue.clear()
+            logs = channel_log_queue.copy()
+            channel_log_queue.clear()
             for msg, media in logs:
                 try:
                     await bot.send_message(chat_id=CHANNEL_ID, text=msg)
                     if media:
-                        await media
+                        await media()
                 except Exception as e:
                     print(f"❌ Error logging to channel: {e}")
 
