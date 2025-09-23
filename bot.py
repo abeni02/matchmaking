@@ -24,6 +24,7 @@ import threading
 import requests
 from aiohttp import web
 from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
+from collections import defaultdict
 
 # Constants for limits
 MAX_ACTIVE_USERS = 1000
@@ -46,7 +47,7 @@ async def set_bot_commands():
     ]
     await bot.set_my_commands(commands, scope=BotCommandScopeAllPrivateChats())
     await bot.set_my_commands([], scope=BotCommandScopeAllGroupChats())
-    print("✅ Bot commands set for private chats only and removed from group chats")
+    logging.info("✅ Bot commands set for private chats only and removed from group chats")
 
 # Bot token, channel ID, group ID, and group invite link setup
 BOT_TOKEN = os.getenv('BOT_TOKEN')
@@ -83,6 +84,7 @@ cooldown_tracker = {}
 waiting_users = set()
 waiting_start_times = {}
 message_id_map = {}
+waiting_buckets = defaultdict(set)  # Key: (gender.lower(), religion.lower()), Value: set(user_ids)
 
 # Button texts
 BEGIN_TEXT = "🚀 Begin"
@@ -122,12 +124,12 @@ async def save_user_data():
                 )
                 break
             except Exception as e:
-                print(f"❌ Error saving user {user_id} to MongoDB (attempt {attempt+1}): {e}")
+                logging.error(f"❌ Error saving user {user_id} to MongoDB (attempt {attempt+1}): {e}")
                 if attempt < 2:
                     await asyncio.sleep(2 ** attempt)
                 else:
-                    print(f"❌ Failed to save user {user_id} after 3 attempts")
-    print(f"✅ All user data saved to MongoDB")
+                    logging.error(f"❌ Failed to save user {user_id} after 3 attempts")
+    logging.info(f"✅ All user data saved to MongoDB")
 
 # Function to load user data from MongoDB and rebuild states
 async def load_user_data():
@@ -143,7 +145,7 @@ async def load_user_data():
                 user_id = doc['_id']
                 user_data[user_id] = {k: v for k, v in doc.items() if k != '_id'}
             except Exception as e:
-                print(f"❌ Error loading user {doc.get('_id', 'unknown')}: {e}")
+                logging.error(f"❌ Error loading user {doc.get('_id', 'unknown')}: {e}")
         # Now process matches and waitings
         for doc in docs:
             try:
@@ -152,6 +154,9 @@ async def load_user_data():
                 if waiting_since:
                     waiting_users.add(user_id)
                     waiting_start_times[user_id] = waiting_since
+                    g = doc.get('gender', '').lower()
+                    r = doc.get('religion', '').lower()
+                    waiting_buckets[(g, r)].add(user_id)
                 match_partner = doc.get("match_partner")
                 if match_partner and match_partner in user_data:
                     if user_data[match_partner].get("match_partner") == user_id:
@@ -159,8 +164,8 @@ async def load_user_data():
                             active_matches[user_id] = match_partner
                             active_matches[match_partner] = user_id
             except Exception as e:
-                print(f"❌ Error processing user {doc.get('_id', 'unknown')}: {e}")
-        # Cleanup orphaned matches (though should not be needed now)
+                logging.error(f"❌ Error processing user {doc.get('_id', 'unknown')}: {e}")
+        # Cleanup orphaned matches
         async with active_matches_lock:
             for user_id in list(active_matches.keys()):
                 partner = active_matches[user_id]
@@ -169,11 +174,13 @@ async def load_user_data():
                     del active_matches[partner]
                     user_data[user_id]["match_partner"] = None
                     user_data[partner]["match_partner"] = None
-                    print(f"🧹 Cleaned up orphaned match for {user_id}")
-        print(f"✅ Loaded data for {len(user_data)} users from MongoDB")
-        print(f"🔄 Recovered {len(active_matches) // 2} active matches and {len(waiting_users)} waiting users")
+                    logging.info(f"🧹 Cleaned up orphaned match for {user_id}")
+                    queue_user_update(user_id)
+                    queue_user_update(partner)
+        logging.info(f"✅ Loaded data for {len(user_data)} users from MongoDB")
+        logging.info(f"🔄 Recovered {len(active_matches) // 2} active matches and {len(waiting_users)} waiting users")
     except Exception as e:
-        print(f"❌ Error connecting to MongoDB: {e}")
+        logging.error(f"❌ Error connecting to MongoDB: {e}")
 
 # Optimized: Batch updates
 pending_updates = {}  # Collect updates
@@ -204,9 +211,9 @@ async def batch_update_users():
         if bulk_ops:
             try:
                 await users_collection.bulk_write(bulk_ops)
-                print(f"✅ Batched {len(bulk_ops)} user updates")
+                logging.info(f"✅ Batched {len(bulk_ops)} user updates")
             except Exception as e:
-                print(f"❌ Batch update failed: {e}")
+                logging.error(f"❌ Batch update failed: {e}")
         
         pending_updates.clear()
         last_batch_time = now
@@ -222,7 +229,7 @@ async def is_group_member(user_id: int) -> bool:
         member = await bot.get_chat_member(chat_id=GROUP_ID, user_id=user_id)
         return member.status not in ['left', 'kicked']
     except Exception as e:
-        print(f"Error checking group membership for user {user_id}: {e}")
+        logging.error(f"Error checking group membership for user {user_id}: {e}")
         return False
 
 
@@ -265,7 +272,7 @@ def get_user_state(user_id):
     in_waiting = user_id in waiting_users
     in_active = user_id in active_matches
     if in_waiting and in_active:
-        print(f"⚠️ User {user_id} is both in waiting_users and active_matches. Correcting state.")
+        logging.warning(f"⚠️ User {user_id} is both in waiting_users and active_matches. Correcting state.")
         waiting_users.discard(user_id)
         return "chatting"
     elif in_active:
@@ -416,8 +423,14 @@ async def start_searching(message: Message, user_id: int):
                 reply_markup=get_main_keyboard(state="idle")
             )
             return False
-        waiting_start_times[user_id] = datetime.datetime.now()
+        now = datetime.datetime.now()
+        waiting_start_times[user_id] = now
         waiting_users.add(user_id)
+        async with user_data_lock:
+            user = user_data.get(user_id, {})
+            g = user.get('gender', '').lower()
+            r = user.get('religion', '').lower()
+            waiting_buckets[(g, r)].add(user_id)
     queue_user_update(user_id)  # Save waiting state immediately
 
     await message.answer(
@@ -439,24 +452,41 @@ async def attempt_match(user_id):
     async with waiting_users_lock:
         if user_id not in waiting_users:
             return False
-        candidates = list(waiting_users - {user_id})
-    candidates = sorted(candidates, key=lambda c: waiting_start_times.get(c, now))
     async with user_data_lock:
-        user_prefs = user_data.get(user_id, {})
-        candidate_prefs = {cid: user_data.get(cid, {}) for cid in candidates}
+        user_prefs = user_data.get(user_id, {}).copy()
+    user_partner_prefs = user_prefs.get("partner", {})
+    target_gender = user_partner_prefs.get("gender", "any").lower()
+    target_religion = user_partner_prefs.get("religion", "any").lower()
+
+    candidates = set()
+    async with waiting_users_lock:
+        for key, users in waiting_buckets.items():
+            g, r = key
+            if (target_gender == "any" or g == target_gender) and (target_religion == "any" or r == target_religion):
+                candidates.update(users)
+        candidates -= {user_id}
+        sorted_candidates = sorted(candidates, key=lambda c: waiting_start_times.get(c, now))
+        candidate_prefs = {cid: user_data.get(cid, {}) for cid in sorted_candidates}
     async with cooldown_tracker_lock:
         user_cooldowns = cooldown_tracker.get(user_id, {})
 
-    match_id = find_match(user_id, candidates, user_prefs, candidate_prefs, user_cooldowns, now)
+    match_id = find_match(user_id, sorted_candidates, user_prefs, candidate_prefs, user_cooldowns, now)
     if match_id:
         async with active_matches_lock, waiting_users_lock:
             if user_id in waiting_users and match_id in waiting_users:
                 active_match_count = len(active_matches) // 2
                 if active_match_count >= MAX_CONCURRENT_MATCHES:
-                    print(f"⚠️ Cannot match {user_id} with {match_id}: maximum concurrent matches reached")
+                    logging.warning(f"⚠️ Cannot match {user_id} with {match_id}: maximum concurrent matches reached")
                     return False
                 active_matches[user_id] = match_id
                 active_matches[match_id] = user_id
+                async with user_data_lock:
+                    user_g = user_data[user_id].get('gender', '').lower()
+                    user_r = user_data[user_id].get('religion', '').lower()
+                    match_g = user_data[match_id].get('gender', '').lower()
+                    match_r = user_data[match_id].get('religion', '').lower()
+                    waiting_buckets[(user_g, user_r)].discard(user_id)
+                    waiting_buckets[(match_g, match_r)].discard(match_id)
                 waiting_users.discard(user_id)
                 waiting_users.discard(match_id)
                 waiting_start_times.pop(user_id, None)
@@ -519,9 +549,9 @@ async def attempt_match(user_id):
                         chat_id=CHANNEL_ID,
                         text=channel_message
                     )
-                    print(f"📢 Match logged to channel {CHANNEL_ID} for users {user_id} and {match_id}")
+                    logging.info(f"📢 Match logged to channel {CHANNEL_ID} for users {user_id} and {match_id}")
                 except Exception as e:
-                    print(f"❌ Error logging match to channel {CHANNEL_ID}: {e}")
+                    logging.error(f"❌ Error logging match to channel {CHANNEL_ID}: {e}")
                 
                 # Save match state immediately
                 queue_user_update(user_id)
@@ -615,6 +645,11 @@ async def handle_matching_button(message: Message):
             if user_id in waiting_users:
                 waiting_users.remove(user_id)
                 waiting_start_times.pop(user_id, None)
+                async with user_data_lock:
+                    if user_id in user_data:
+                        g = user_data[user_id].get('gender', '').lower()
+                        r = user_data[user_id].get('religion', '').lower()
+                        waiting_buckets[(g, r)].discard(user_id)
         queue_user_update(user_id)  # Save state immediately
         await message.answer(
             "🛑 You have stopped searching.",
@@ -670,9 +705,7 @@ async def handle_help(message: Message):
 async def forward_messages(message: Message):
     user_id = message.from_user.id
     current_state = get_user_state(user_id)
-    print(f"📩 Received message from {user_id}, type: {message.content_type}, state: {current_state}")
-    print(f"📋 Active matches: {active_matches}")
-    print(f"🗂️ Current message_id_map: {message_id_map}")
+    logging.info(f"📩 Received message from {user_id}, type: {message.content_type}, state: {current_state}")
 
     if current_state == "chatting":
         async with active_matches_lock:
@@ -693,13 +726,13 @@ async def forward_messages(message: Message):
         reply_info = ""
         if message.reply_to_message:
             original_reply_id = message.reply_to_message.message_id
-            print(f"↩️ Detected reply from {user_id} to message {original_reply_id}")
+            logging.info(f"↩️ Detected reply from {user_id} to message {original_reply_id}")
             reply_to_message_id = message_id_map.get(user_id, {}).get(original_reply_id)
             if not reply_to_message_id:
-                print(f"⚠️ No mapped message ID found for reply from {user_id} to {original_reply_id}")
+                logging.warning(f"⚠️ No mapped message ID found for reply from {user_id} to {original_reply_id}")
                 reply_info = f" (reply to message ID {original_reply_id}, mapping not found)"
             else:
-                print(f"✅ Found mapped reply_to_message_id for user {user_id}: {reply_to_message_id}")
+                logging.info(f"✅ Found mapped reply_to_message_id for user {user_id}: {reply_to_message_id}")
                 reply_info = f" (reply to message ID {reply_to_message_id})"
 
         user_info = await bot.get_chat(user_id)
@@ -710,7 +743,7 @@ async def forward_messages(message: Message):
         try:
             forwarded_message = None
             if message.text:
-                print(f"📝 Forwarding text message from {user_id} to {partner_id}")
+                logging.info(f"📝 Forwarding text message from {user_id} to {partner_id}")
                 modified_text = label + message.text
                 forwarded_message = await bot.send_message(
                     chat_id=partner_id,
@@ -720,7 +753,7 @@ async def forward_messages(message: Message):
                 )
                 channel_message += f"📜 Text: {message.text}\n"
             elif message.photo:
-                print(f"📸 Forwarding photo from {user_id} to {partner_id}")
+                logging.info(f"📸 Forwarding photo from {user_id} to {partner_id}")
                 caption = message.caption or ""
                 modified_caption = label + caption
                 forwarded_message = await bot.send_photo(
@@ -734,7 +767,7 @@ async def forward_messages(message: Message):
                 if message.caption:
                     channel_message += f"📝 Caption: {message.caption}\n"
             elif message.document:
-                print(f"📄 Forwarding document from {user_id} to {partner_id}")
+                logging.info(f"📄 Forwarding document from {user_id} to {partner_id}")
                 caption = message.caption or ""
                 modified_caption = label + caption
                 forwarded_message = await bot.send_document(
@@ -746,7 +779,7 @@ async def forward_messages(message: Message):
                 )
                 channel_message += f"📎 Document: {message.document.file_name or 'Unnamed document'}\n"
             elif message.video:
-                print(f"🎥 Forwarding video from {user_id} to {partner_id}")
+                logging.info(f"🎥 Forwarding video from {user_id} to {partner_id}")
                 caption = message.caption or ""
                 modified_caption = label + caption
                 forwarded_message = await bot.send_video(
@@ -760,7 +793,7 @@ async def forward_messages(message: Message):
                 if message.caption:
                     channel_message += f"📝 Caption: {message.caption}\n"
             elif message.audio:
-                print(f"🎵 Forwarding audio from {user_id} to {partner_id}")
+                logging.info(f"🎵 Forwarding audio from {user_id} to {partner_id}")
                 caption = message.caption or ""
                 modified_caption = label + caption
                 forwarded_message = await bot.send_audio(
@@ -774,7 +807,7 @@ async def forward_messages(message: Message):
                 if message.caption:
                     channel_message += f"📝 Caption: {message.caption}\n"
             elif message.voice:
-                print(f"🎙️ Forwarding voice message from {user_id} to {partner_id}")
+                logging.info(f"🎙️ Forwarding voice message from {user_id} to {partner_id}")
                 caption = message.caption or ""
                 modified_caption = label + caption
                 forwarded_message = await bot.send_voice(
@@ -788,7 +821,7 @@ async def forward_messages(message: Message):
                 if message.caption:
                     channel_message += f"📝 Caption: {message.caption}\n"
             elif message.video_note:
-                print(f"🎥 Forwarding video note from {user_id} to {partner_id}")
+                logging.info(f"🎥 Forwarding video note from {user_id} to {partner_id}")
                 label_text = f"Partner {gender_emoji}:"
                 await bot.send_message(
                     chat_id=partner_id,
@@ -804,10 +837,10 @@ async def forward_messages(message: Message):
                 )
                 message_id_map[user_id][message.message_id] = forwarded_message.message_id
                 message_id_map[partner_id][forwarded_message.message_id] = message.message_id
-                print(f"📌 Mapped message ID {message.message_id} (user {user_id}) to {forwarded_message.message_id} (user {partner_id}) for video note")
+                logging.info(f"📌 Mapped message ID {message.message_id} (user {user_id}) to {forwarded_message.message_id} (user {partner_id}) for video note")
                 channel_message += f"📜 Label: {label_text}\n🎥 Video note sent\n"
             elif message.sticker:
-                print(f"🏷️ Forwarding sticker from {user_id} to {partner_id}")
+                logging.info(f"🏷️ Forwarding sticker from {user_id} to {partner_id}")
                 label_text = f"Partner {gender_emoji}:"
                 await bot.send_message(
                     chat_id=partner_id,
@@ -823,16 +856,14 @@ async def forward_messages(message: Message):
                 )
                 message_id_map[user_id][message.message_id] = forwarded_message.message_id
                 message_id_map[partner_id][forwarded_message.message_id] = message.message_id
-                print(f"📌 Mapped message ID {message.message_id} (user {user_id}) to {forwarded_message.message_id} (user {partner_id}) for sticker")
+                logging.info(f"📌 Mapped message ID {message.message_id} (user {user_id}) to {forwarded_message.message_id} (user {partner_id}) for sticker")
                 channel_message += f"📜 Label: {label_text}\n🏷️ Sticker sent\n"
             if forwarded_message and hasattr(forwarded_message, 'message_id') and message.content_type not in ('video_note', 'sticker'):
                 message_id_map[user_id][message.message_id] = forwarded_message.message_id
                 message_id_map[partner_id][forwarded_message.message_id] = message.message_id
-                print(f"📌 Mapped message ID {message.message_id} (user {user_id}) to {forwarded_message.message_id} (user {partner_id})")
-            else:
-                print(f"⚠️ Could not map message ID for {user_id}: no valid forwarded_message")
+                logging.info(f"📌 Mapped message ID {message.message_id} (user {user_id}) to {forwarded_message.message_id} (user {partner_id})")
         except Exception as e:
-            print(f"❌ Error forwarding message from {user_id} to {partner_id}: {e}")
+            logging.error(f"❌ Error forwarding message from {user_id} to {partner_id}: {e}")
             await message.answer("⚠️ Failed to send message. Please try again later.")
 
         try:
@@ -880,9 +911,9 @@ async def forward_messages(message: Message):
                     chat_id=CHANNEL_ID,
                     sticker=message.sticker.file_id
                 )
-            print(f"📢 Message from user {user_id} to {partner_id} logged to channel {CHANNEL_ID}")
+            logging.info(f"📢 Message from user {user_id} to {partner_id} logged to channel {CHANNEL_ID}")
         except Exception as e:
-            print(f"❌ Error logging message to channel {CHANNEL_ID}: {e}")
+            logging.error(f"❌ Error logging message to channel {CHANNEL_ID}: {e}")
     elif current_state == "searching":
         await message.answer(
             "🔍 You are already searching for a partner. Please wait.",
@@ -904,7 +935,7 @@ async def handle_chat_member_update(update: ChatMemberUpdated, bot: Bot):
     username = f"@{user.username}" if user.username and user.username.strip() else ""  # Include @username if available
     
     # Debug logging to confirm update details
-    print(f"Received chat member update: user_id={user_id}, first_name={first_name}, username={username}, old_status={old_status}, new_status={new_status}")
+    logging.info(f"Received chat member update: user_id={user_id}, first_name={first_name}, username={username}, old_status={old_status}, new_status={new_status}")
 
     # Check if user was kicked (banned) by an admin, exclude bot or admin self-actions
     if old_status in ['member', 'administrator', 'creator'] and new_status == 'kicked' and not user.is_bot:
@@ -914,7 +945,7 @@ async def handle_chat_member_update(update: ChatMemberUpdated, bot: Bot):
                 f"{first_name} {username} is eliminated due to unsupported behaviour.\n"
                 f"{first_name} {username} ተገቢ ባልሆነ ባህሪ ምክንያት ተወግዷል።"
             ).strip()
-            print(f"Message text: '{message_text}' (length: {len(message_text)})")  # Debug message length
+            logging.info(f"Message text: '{message_text}' (length: {len(message_text)})")  # Debug message length
             
             # Prepare message entities for clickable name/username
             entities = []
@@ -941,7 +972,7 @@ async def handle_chat_member_update(update: ChatMemberUpdated, bot: Bot):
                     "length": name_length,
                     "user": {"id": user_id, "is_bot": False, "first_name": first_name}
                 })
-            print(f"Entities for user {user_id}: {entities}")
+            logging.info(f"Entities for user {user_id}: {entities}")
 
             # Send message to group
             try:
@@ -950,16 +981,16 @@ async def handle_chat_member_update(update: ChatMemberUpdated, bot: Bot):
                     text=message_text,
                     entities=entities
                 )
-                print(f"Message sent successfully for user {user_id}")
+                logging.info(f"Message sent successfully for user {user_id}")
             except Exception as msg_e:
-                print(f"Message send failed for user {user_id}: {msg_e}")
+                logging.error(f"Message send failed for user {user_id}: {msg_e}")
                 # Fallback: Send without entities
                 fallback_text = message_text.replace(username, first_name)
                 await bot.send_message(
                     chat_id=GROUP_ID,
                     text=fallback_text
                 )
-                print(f"Fallback message sent for user {user_id}")
+                logging.info(f"Fallback message sent for user {user_id}")
 
             # Small delay to avoid rate limits
             await asyncio.sleep(0.5)
@@ -967,14 +998,14 @@ async def handle_chat_member_update(update: ChatMemberUpdated, bot: Bot):
             # Send sticker to group
             sticker_id = "CAACAgEAAxkBAAE5E-xok7FWOS3t3jQUWxT3_Yw8QGgkNQACSQQAAmGwwEehsx6rufaXijYE"
             try:
-                print(f"Attempting to send sticker for user {user_id} ({first_name} {username})")
+                logging.info(f"Attempting to send sticker for user {user_id} ({first_name} {username})")
                 await bot.send_sticker(
                     chat_id=GROUP_ID,
                     sticker=sticker_id
                 )
-                print(f"Sticker sent successfully for user {user_id}")
+                logging.info(f"Sticker sent successfully for user {user_id}")
             except Exception as sticker_e:
-                print(f"Sticker send failed for user {user_id}: {sticker_e}")
+                logging.error(f"Sticker send failed for user {user_id}: {sticker_e}")
                 # Fallback: Try a known good sticker
                 fallback_sticker = "CAADAgADBAADfyesDlKEqOOd72VKAg"  # Public sticker
                 try:
@@ -982,9 +1013,9 @@ async def handle_chat_member_update(update: ChatMemberUpdated, bot: Bot):
                         chat_id=GROUP_ID,
                         sticker=fallback_sticker
                     )
-                    print(f"Fallback sticker sent for user {user_id}")
+                    logging.info(f"Fallback sticker sent for user {user_id}")
                 except Exception as fallback_e:
-                    print(f"Fallback sticker send failed for user {user_id}: {fallback_e}")
+                    logging.error(f"Fallback sticker send failed for user {user_id}: {fallback_e}")
 
             # Small delay to avoid rate limits
             await asyncio.sleep(0.5)
@@ -1004,9 +1035,9 @@ async def handle_chat_member_update(update: ChatMemberUpdated, bot: Bot):
                     chat_id=CHANNEL_ID,
                     text=channel_message
                 )
-                print(f"Channel message sent for user {user_id}")
+                logging.info(f"Channel message sent for user {user_id}")
             except Exception as channel_e:
-                print(f"Channel message send failed for user {user_id}: {channel_e}")
+                logging.error(f"Channel message send failed for user {user_id}: {channel_e}")
 
             # Clean up user data
             async with active_matches_lock, waiting_users_lock, user_data_lock, cooldown_tracker_lock:
@@ -1027,8 +1058,11 @@ async def handle_chat_member_update(update: ChatMemberUpdated, bot: Bot):
                             )
                             queue_user_update(partner_id)
                         except Exception as partner_e:
-                            print(f"Failed to notify partner {partner_id}: {partner_e}")
+                            logging.error(f"Failed to notify partner {partner_id}: {partner_e}")
                 if user_id in waiting_users:
+                    g = user_data.get(user_id, {}).get('gender', '').lower()
+                    r = user_data.get(user_id, {}).get('religion', '').lower()
+                    waiting_buckets[(g, r)].discard(user_id)
                     waiting_users.discard(user_id)
                     waiting_start_times.pop(user_id, None)
                 if user_id in user_data:
@@ -1038,10 +1072,10 @@ async def handle_chat_member_update(update: ChatMemberUpdated, bot: Bot):
                 try:
                     queue_user_update(user_id)  # Ensure user data is removed from MongoDB
                 except Exception as db_e:
-                    print(f"Failed to update user data for {user_id}: {db_e}")
-            print(f"🚫 User {first_name} {username} (ID: {user_id}) removed from group and data cleaned up")
+                    logging.error(f"Failed to update user data for {user_id}: {db_e}")
+            logging.info(f"🚫 User {first_name} {username} (ID: {user_id}) removed from group and data cleaned up")
         except Exception as e:
-            print(f"❌ Error handling user {user_id} removal: {e}")
+            logging.error(f"❌ Error handling user {user_id} removal: {e}")
     elif old_status in ['member', 'administrator', 'creator'] and new_status == 'left' and not user.is_bot:
         # Handle voluntary leave (clean up data without sending elimination message)
         try:
@@ -1063,8 +1097,11 @@ async def handle_chat_member_update(update: ChatMemberUpdated, bot: Bot):
                             )
                             queue_user_update(partner_id)
                         except Exception as partner_e:
-                            print(f"Failed to notify partner {partner_id}: {partner_e}")
+                            logging.error(f"Failed to notify partner {partner_id}: {partner_e}")
                 if user_id in waiting_users:
+                    g = user_data.get(user_id, {}).get('gender', '').lower()
+                    r = user_data.get(user_id, {}).get('religion', '').lower()
+                    waiting_buckets[(g, r)].discard(user_id)
                     waiting_users.discard(user_id)
                     waiting_start_times.pop(user_id, None)
                 if user_id in user_data:
@@ -1074,10 +1111,10 @@ async def handle_chat_member_update(update: ChatMemberUpdated, bot: Bot):
                 try:
                     queue_user_update(user_id)  # Ensure user data is removed from MongoDB
                 except Exception as db_e:
-                    print(f"Failed to update user data for {user_id}: {db_e}")
-            print(f"👋 User {first_name} {username} (ID: {user_id}) left the group voluntarily and data cleaned up")
+                    logging.error(f"Failed to update user data for {user_id}: {db_e}")
+            logging.info(f"👋 User {first_name} {username} (ID: {user_id}) left the group voluntarily and data cleaned up")
         except Exception as e:
-            print(f"❌ Error handling user {user_id} voluntary leave: {e}")
+            logging.error(f"❌ Error handling user {user_id} voluntary leave: {e}")
 # Callback query handlers
 @router.callback_query(F.data == "age")
 async def handle_age(callback: CallbackQuery):
@@ -1338,7 +1375,7 @@ async def handle_show_setup(callback: CallbackQuery):
 # Periodic task to attempt matching for queued users
 async def try_match_queued_users():
     if not await can_attempt_match():
-        print(f"⚠️ Cannot match queued users: limits reached (active users: {len(waiting_users) + len(active_matches)}, matches: {len(active_matches) // 2})")
+        logging.warning(f"⚠️ Cannot match queued users: limits reached (active users: {len(waiting_users) + len(active_matches)}, matches: {len(active_matches) // 2})")
         return
     sorted_waiting_users = sorted(
         waiting_users,
@@ -1360,21 +1397,21 @@ async def cleanup_cooldown_tracker():
                         del cooldown_tracker[user_id][partner_id]
                 if not cooldown_tracker[user_id]:
                     del cooldown_tracker[user_id]
-        print("🧹 Cleaned up expired cooldown entries")
+        logging.info("🧹 Cleaned up expired cooldown entries")
 
 # Periodic save task
 async def periodic_save():
     while True:
         await asyncio.sleep(300)
         await save_user_data()
-        print("🔄 Periodic backup of user data performed")
+        logging.info("🔄 Periodic backup of user data performed")
 
 # Periodic match check task
 async def periodic_match_check():
     while True:
         await asyncio.sleep(30)
-        if waiting_users:
-            print(f"🔄 Checking for matches among {len(waiting_users)} waiting users")
+        if len(waiting_users) > 1:
+            logging.info(f"🔄 Checking for matches among {len(waiting_users)} waiting users")
             await try_match_queued_users()
 
 # Add these new constants after BOT_TOKEN etc.
@@ -1394,11 +1431,11 @@ def keep_alive():
         try:
             response = requests.get(url, timeout=10)
             if response.status_code == 200:
-                print(f"Successfully pinged {url} to keep alive")
+                logging.info(f"Successfully pinged {url} to keep alive")
             else:
-                print(f"Ping to {url} returned status code {response.status_code}")
+                logging.warning(f"Ping to {url} returned status code {response.status_code}")
         except requests.RequestException as e:
-            print(f"Ping to {url} failed: {e}")
+            logging.error(f"Ping to {url} failed: {e}")
         time.sleep(300)  # Every 5 minutes
 
 if __name__ == "__main__":
@@ -1437,15 +1474,16 @@ if __name__ == "__main__":
             secret_token=WEBHOOK_SECRET if WEBHOOK_SECRET else None,
             drop_pending_updates=True  # Ignore old polling updates
         )
-        print(f"Webhook set to {WEBHOOK_URL}")
+        logging.info(f"Webhook set to {WEBHOOK_URL}")
     
     app.on_startup.append(on_startup)
     
     # On shutdown: Clean up webhook, save data, cancel tasks
     async def on_shutdown(app):
         await bot.delete_webhook()
+        await batch_update_users()
         await save_user_data()
-        print("Webhook deleted and final save completed")
+        logging.info("Webhook deleted and final save completed")
     
     app.on_shutdown.append(on_shutdown)
     
