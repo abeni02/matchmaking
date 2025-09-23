@@ -14,6 +14,7 @@ from aiogram.types import (
 import asyncio
 import os
 import datetime
+import pytz
 from motor.motor_asyncio import AsyncIOMotorClient
 import time
 from pymongo.operations import ReplaceOne
@@ -136,30 +137,38 @@ async def load_user_data():
     waiting_users = set()
     waiting_start_times = {}
     try:
-        async for document in users_collection.find():
+        docs = await users_collection.find().to_list(None)
+        for doc in docs:
             try:
-                user_id = document['_id']
-                user_data[user_id] = {k: v for k, v in document.items() if k != '_id'}
-                match_partner = document.get("match_partner")
-                if match_partner and match_partner in user_data:
-                    if user_data[match_partner].get("match_partner") == user_id:
-                        active_matches[user_id] = match_partner
-                        active_matches[match_partner] = user_id
-                    else:
-                        print(f"⚠️ Inconsistent match for {user_id}: partner {match_partner} does not match back")
-                        user_data[user_id]["match_partner"] = None
-                waiting_since = document.get("waiting_since")
+                user_id = doc['_id']
+                user_data[user_id] = {k: v for k, v in doc.items() if k != '_id'}
+            except Exception as e:
+                print(f"❌ Error loading user {doc.get('_id', 'unknown')}: {e}")
+        # Now process matches and waitings
+        for doc in docs:
+            try:
+                user_id = doc['_id']
+                waiting_since = doc.get("waiting_since")
                 if waiting_since:
                     waiting_users.add(user_id)
                     waiting_start_times[user_id] = waiting_since
+                match_partner = doc.get("match_partner")
+                if match_partner and match_partner in user_data:
+                    if user_data[match_partner].get("match_partner") == user_id:
+                        if user_id not in active_matches and match_partner not in active_matches:
+                            active_matches[user_id] = match_partner
+                            active_matches[match_partner] = user_id
             except Exception as e:
-                print(f"❌ Error loading user {document.get('_id', 'unknown')}: {e}")
+                print(f"❌ Error processing user {doc.get('_id', 'unknown')}: {e}")
+        # Cleanup orphaned matches (though should not be needed now)
         async with active_matches_lock:
             for user_id in list(active_matches.keys()):
-                if active_matches.get(active_matches[user_id]) != user_id:
+                partner = active_matches[user_id]
+                if active_matches.get(partner) != user_id:
                     del active_matches[user_id]
-                    del active_matches[active_matches[user_id]]
+                    del active_matches[partner]
                     user_data[user_id]["match_partner"] = None
+                    user_data[partner]["match_partner"] = None
                     print(f"🧹 Cleaned up orphaned match for {user_id}")
         print(f"✅ Loaded data for {len(user_data)} users from MongoDB")
         print(f"🔄 Recovered {len(active_matches) // 2} active matches and {len(waiting_users)} waiting users")
@@ -431,6 +440,7 @@ async def attempt_match(user_id):
         if user_id not in waiting_users:
             return False
         candidates = list(waiting_users - {user_id})
+    candidates = sorted(candidates, key=lambda c: waiting_start_times.get(c, now))
     async with user_data_lock:
         user_prefs = user_data.get(user_id, {})
         candidate_prefs = {cid: user_data.get(cid, {}) for cid in candidates}
