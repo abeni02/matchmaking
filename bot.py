@@ -23,7 +23,7 @@ from aiohttp import web
 from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
 from motor.motor_asyncio import AsyncIOMotorClient
 from pymongo.operations import ReplaceOne
-from pymongo.errors import ConnectionError as PyMongoConnectionError
+from pymongo.errors import ConnectionFailure as PyMongoConnectionError
 import json
 from datetime import timedelta
 import pytz
