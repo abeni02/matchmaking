@@ -1376,62 +1376,67 @@ async def main():
     periodic_save_task = asyncio.create_task(periodic_save())
     periodic_match_task = asyncio.create_task(periodic_match_check())
     cleanup_task = asyncio.create_task(cleanup_cooldown_tracker())
-   # Webhook configuration
-WEBHOOK_PATH = '/webhook'  # The endpoint path
-WEBHOOK_URL = os.getenv('WEBHOOK_URL')  # e.g., 'https://yourdomain.com/webhook' - set this in env vars
-WEBHOOK_SECRET = os.getenv('WEBHOOK_SECRET')  # Secret token for webhook security - set this in env vars
-HOST = '0.0.0.0'  # Listen on all interfaces
-PORT = int(os.getenv('PORT', 8443))  # Default Telegram webhook port; set in env vars if needed
-
-if not WEBHOOK_URL:
-    raise ValueError("No WEBHOOK_URL found in environment variables. Please set it securely.")
-
-if not WEBHOOK_SECRET:
-    raise ValueError("No WEBHOOK_SECRET found in environment variables. Please set it securely.")
-
-app = web.Application()
-app.router.add_post(WEBHOOK_PATH, webhook_handler)
-
-# Optional: Add startup/shutdown hooks if needed
-async def on_startup(app):
-    await bot.delete_webhook(drop_pending_updates=True)  # Clear any existing webhook
+    
+    # Webhook configuration
+    WEBHOOK_PATH = '/webhook'  # The endpoint path
+    WEBHOOK_URL = os.getenv('WEBHOOK_URL')  # e.g., 'https://yourdomain.com/webhook' - set this in env vars
+    WEBHOOK_SECRET = os.getenv('WEBHOOK_SECRET')  # Secret token for webhook security - set this in env vars
+    HOST = '0.0.0.0'  # Listen on all interfaces
+    PORT = int(os.getenv('PORT', 8443))  # Default Telegram webhook port; set in env vars if needed
+    
+    if not WEBHOOK_URL:
+        raise ValueError("No WEBHOOK_URL found in environment variables. Please set it securely.")
+    
+    if not WEBHOOK_SECRET:
+        raise ValueError("No WEBHOOK_SECRET found in environment variables. Please set it securely.")
+    
+    # Set webhook
+    await bot.delete_webhook(drop_pending_updates=True)
     await bot.set_webhook(WEBHOOK_URL, secret_token=WEBHOOK_SECRET)
     print(f"✅ Webhook set to {WEBHOOK_URL} with secret")
+    
+    # Create app
+    app = web.Application()
+    app.router.add_post(WEBHOOK_PATH, webhook_handler)
+    
+    # Runner setup
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, HOST, PORT)
+    await site.start()
+    print(f"✅ Server started on {HOST}:{PORT}")
+    
+    # Wait forever, handle shutdown in finally
+    try:
+        await asyncio.Event().wait()  # Wait indefinitely until interrupted (e.g., SIGTERM)
+    finally:
+        await bot.delete_webhook()
+        await save_user_data()
+        print("💾 Final save completed before shutdown")
+        print("👋 Bot has been gracefully shut down")
+        periodic_save_task.cancel()
+        periodic_match_task.cancel()
+        cleanup_task.cancel()
+        try:
+            await periodic_save_task
+            await periodic_match_task
+            await cleanup_task
+        except asyncio.CancelledError:
+            pass
+        await runner.cleanup()
 
-async def on_shutdown(app):
-    await bot.delete_webhook()
-    await save_user_data()
-    print("💾 Final save completed before shutdown")
-    print("👋 Bot has been gracefully shut down")
-
-app.on_startup.append(on_startup)
-app.on_shutdown.append(on_shutdown)
-
-# Example webhook_handler with secret verification (modify as needed)
 async def webhook_handler(request):
     if request.headers.get('X-Telegram-Bot-Api-Secret-Token') != WEBHOOK_SECRET:
         return web.Response(status=403)  # Forbidden if secret doesn't match
     
-    # Process the update
-    update = await request.json()
-    # Assuming you have a dispatcher or handler logic here, e.g., await dp.process_update(update)
-    return web.Response(status=200)
-
-# Run the web app (this replaces polling)
-try:
-    web.run_app(app, host=HOST, port=PORT)  # For SSL in code: add ssl_context=ssl_context (define ssl_context with cert/key)
-except KeyboardInterrupt:
-    pass
-finally:
-    periodic_save_task.cancel()
-    periodic_match_task.cancel()
-    cleanup_task.cancel()
     try:
-        await periodic_save_task
-        await periodic_match_task
-        await cleanup_task
-    except asyncio.CancelledError:
-        pass
+        update_data = await request.json()
+        update = types.Update(**update_data)
+        await dp.process_update(update)
+        return web.Response(text='OK')
+    except Exception as e:
+        print(f"❌ Error processing webhook update: {e}")
+        return web.Response(status=500)
 
 if __name__ == "__main__":
     asyncio.run(main())
