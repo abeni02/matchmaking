@@ -9,11 +9,13 @@ from aiogram.types import (
     BotCommand,
     BotCommandScopeAllPrivateChats,
     BotCommandScopeAllGroupChats,
-    ChatMemberUpdated
+    ChatMemberUpdated,
+    Update
 )
 import asyncio
 import os
 import datetime
+import pytz
 from motor.motor_asyncio import AsyncIOMotorClient
 from aiohttp import web
 
@@ -873,10 +875,10 @@ async def forward_messages(message: Message):
         )
   #       
 @router.chat_member(F.chat.id == int(GROUP_ID))
-async def handle_chat_member_update(update: ChatMemberUpdated, bot: Bot):
-    old_status = update.old_chat_member.status
-    new_status = update.new_chat_member.status
-    user = update.new_chat_member.user  # Get the user whose status changed
+async def handle_chat_member_update(event: ChatMemberUpdated):
+    old_status = event.old_chat_member.status
+    new_status = event.new_chat_member.status
+    user = event.new_chat_member.user  # Get the user whose status changed
     user_id = user.id
     first_name = user.first_name or f"User {user_id}"  # Use first name, fallback to User {user_id}
     username = f"@{user.username}" if user.username and user.username.strip() else ""  # Include @username if available
@@ -1356,9 +1358,12 @@ async def periodic_match_check():
             await try_match_queued_users()
 
 async def webhook_handler(request):
+    if request.headers.get('X-Telegram-Bot-Api-Secret-Token') != WEBHOOK_SECRET:
+        return web.Response(status=403)  # Forbidden if secret doesn't match
+    
     try:
         update_data = await request.json()
-        update = types.Update(**update_data)  # 'types' comes from aiogram.types
+        update = Update(**update_data)
         await dp.feed_update(bot, update)
         return web.Response(text='OK')
     except Exception as e:
@@ -1424,19 +1429,6 @@ async def main():
         except asyncio.CancelledError:
             pass
         await runner.cleanup()
-
-async def webhook_handler(request):
-    if request.headers.get('X-Telegram-Bot-Api-Secret-Token') != WEBHOOK_SECRET:
-        return web.Response(status=403)  # Forbidden if secret doesn't match
-    
-    try:
-        update_data = await request.json()
-        update = types.Update(**update_data)
-        await dp.process_update(update)
-        return web.Response(text='OK')
-    except Exception as e:
-        print(f"❌ Error processing webhook update: {e}")
-        return web.Response(status=500)
 
 if __name__ == "__main__":
     asyncio.run(main())
