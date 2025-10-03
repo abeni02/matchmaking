@@ -1403,8 +1403,8 @@ async def main():
     # Create app
     app = web.Application()
     async def health(request):
-    return web.Response(text='OK')
-app.router.add_get('/', health)
+        return web.Response(text='OK')
+    app.router.add_get('/', health)
     app.router.add_post(WEBHOOK_PATH, webhook_handler)
     
     # Runner setup
