@@ -1387,7 +1387,7 @@ async def main():
     WEBHOOK_URL = os.getenv('WEBHOOK_URL')  # e.g., 'https://yourdomain.com/webhook' - set this in env vars
     WEBHOOK_SECRET = os.getenv('WEBHOOK_SECRET')  # Secret token for webhook security - set this in env vars
     HOST = '0.0.0.0'  # Listen on all interfaces
-    PORT = int(os.getenv('PORT', 10000))  # Default Telegram webhook port; set in env vars if needed
+    PORT = int(os.getenv('PORT', 1000))  # Default Telegram webhook port; set in env vars if needed
     
     if not WEBHOOK_URL:
         raise ValueError("No WEBHOOK_URL found in environment variables. Please set it securely.")
